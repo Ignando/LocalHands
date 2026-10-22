@@ -183,6 +183,7 @@ export type ServiceRequest = {
   service: string;
   date: string;
   time: string;
+  scheduledAt: string;
   location: string;
   total: number;
   notes?: string;

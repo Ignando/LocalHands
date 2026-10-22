@@ -813,9 +813,11 @@ BEGIN
         THROW 50011, 'Invalid request status.', 1;
 
     DECLARE @OldStatus NVARCHAR(10);
+    DECLARE @SlotId INT;
+    DECLARE @WorkerId INT;
 
     BEGIN TRANSACTION;
-        SELECT @OldStatus = Status
+        SELECT @OldStatus = Status, @SlotId = SlotId, @WorkerId = WorkerId
         FROM dbo.ServiceRequests WITH (UPDLOCK, ROWLOCK)
         WHERE RequestId = @RequestId;
 
@@ -857,8 +859,26 @@ BEGIN
 
         IF @NewStatus IN (N'Declined', N'Cancelled')
         BEGIN
-            UPDATE dbo.AvailabilitySlots SET SlotStatus = N'Available'
-            WHERE SlotId = (SELECT SlotId FROM dbo.ServiceRequests WHERE RequestId = @RequestId);
+            UPDATE slot
+            SET SlotStatus = CASE
+                WHEN slot.StartsAt > SYSUTCDATETIME() AND EXISTS (
+                    SELECT 1
+                    FROM dbo.WeeklyHours wh
+                    WHERE wh.WorkerId = @WorkerId
+                      AND wh.IsAvailable = 1
+                      AND wh.DayOfWeek = CONVERT(TINYINT, (DATEDIFF(DAY, CONVERT(DATE, '19000101'), CONVERT(DATE, localTime.LocalStartsAt)) % 7) + 1)
+                      AND CONVERT(TIME(0), localTime.LocalStartsAt) >= wh.StartTime
+                      AND CONVERT(TIME(0), localTime.LocalEndsAt) <= wh.EndTime
+                ) THEN N'Available'
+                ELSE N'Blocked'
+            END
+            FROM dbo.AvailabilitySlots slot
+            CROSS APPLY (
+                SELECT
+                    (slot.StartsAt AT TIME ZONE 'UTC') AT TIME ZONE 'South Africa Standard Time' AS LocalStartsAt,
+                    (slot.EndsAt AT TIME ZONE 'UTC') AT TIME ZONE 'South Africa Standard Time' AS LocalEndsAt
+            ) localTime
+            WHERE slot.SlotId = @SlotId;
         END;
 
         IF @NewStatus = N'Completed'

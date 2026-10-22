@@ -3,6 +3,7 @@ import type { AuthenticatedAccount } from "@/lib/auth-types";
 import {
   type Application,
   type ApplicationStatus,
+  type Day,
   type RequestStatus,
   type Review,
   type ServiceRequest,
@@ -21,6 +22,16 @@ import {
 } from "@/lib/server/workflows";
 
 export type Role = "customer" | "worker" | "admin";
+
+const DAY_TO_NUMBER: Record<Day, number> = {
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+  Sun: 7,
+};
 
 type Store = {
   account: AuthenticatedAccount | null;
@@ -131,6 +142,15 @@ export function StoreProvider({
           travelFee: patch.travelFee ?? 0,
           bio: patch.bio ?? "",
           services: patch.services ?? [],
+          schedule: Object.entries(patch.schedule ?? {}).flatMap(([day, hours]) =>
+            hours
+              ? [{
+                  dayOfWeek: DAY_TO_NUMBER[day as Day],
+                  startTime: hours[0],
+                  endTime: hours[1],
+                }]
+              : [],
+          ),
         },
       });
       setWorkers((previous) => previous.map((worker) => worker.id === id ? updated : worker));

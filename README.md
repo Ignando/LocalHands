@@ -11,7 +11,7 @@ The platform is designed to connect customers with independent local service pro
 - Browse SQL-backed worker listings, profiles, reviews and available booking slots.
 - Create a customer account and sign in with an email and password.
 - Submit worker applications and review them as an admin.
-- Create and manage bookings, worker profiles and listings.
+- Create and manage bookings, worker profiles and listings; workers can set weekly availability that generates bookable slots for the next 30 days, and accepted bookings appear on their dashboard calendar.
 - Assign customer, worker and admin access from the database account role.
 
 ## Technology stack

@@ -149,6 +149,31 @@ export async function getAuthenticatedUser(): Promise<AuthenticatedUser | null> 
   };
 }
 
+async function getAuthenticatedUserById(
+  userId: number,
+): Promise<AuthenticatedUser | null> {
+  const pool = await getDbConnection();
+  const result = await pool
+    .request()
+    .input("UserId", sql.Int, userId)
+    .query<SessionRow>(`
+      SELECT u.UserId, u.FullName, u.Email, u.Role, u.IsActive, w.PublicId
+      FROM dbo.Users u
+      LEFT JOIN dbo.Workers w ON w.UserId = u.UserId
+      WHERE u.UserId = @UserId AND u.IsActive = 1
+    `);
+  const row = result.recordset[0];
+  if (!row) return null;
+
+  return {
+    userId: row.UserId,
+    name: row.FullName,
+    email: row.Email,
+    role: toAccountRole(row.Role),
+    workerPublicId: row.PublicId,
+  };
+}
+
 export async function requireRole(...roles: AccountRole[]): Promise<AuthenticatedUser> {
   const user = await getAuthenticatedUser();
   if (!user) throw new Error("Authentication required");
@@ -196,7 +221,7 @@ export const signIn = createServerFn({ method: "POST" })
 
     loginFailures.delete(email);
     await startSession(user.UserId);
-    const authenticatedUser = await getAuthenticatedUser();
+    const authenticatedUser = await getAuthenticatedUserById(user.UserId);
     if (!authenticatedUser) throw new Error("Could not create a sign-in session");
     return toPublicAccount(authenticatedUser);
   });
@@ -233,7 +258,7 @@ export const registerCustomer = createServerFn({ method: "POST" })
     const userId = created.recordset[0]?.UserId;
     if (!userId) throw new Error("Could not create the account");
     await startSession(userId);
-    const authenticatedUser = await getAuthenticatedUser();
+    const authenticatedUser = await getAuthenticatedUserById(userId);
     if (!authenticatedUser) throw new Error("Could not create a sign-in session");
     return toPublicAccount(authenticatedUser);
   });

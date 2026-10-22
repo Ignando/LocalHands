@@ -25,6 +25,15 @@ export const Route = createFileRoute("/worker-profile")({
 });
 
 const field = "panel w-full bg-transparent px-3 py-2 text-sm outline-none focus:border-primary";
+const WEEKDAYS = [
+  { day: "Mon", label: "Monday", dayOfWeek: 1 },
+  { day: "Tue", label: "Tuesday", dayOfWeek: 2 },
+  { day: "Wed", label: "Wednesday", dayOfWeek: 3 },
+  { day: "Thu", label: "Thursday", dayOfWeek: 4 },
+  { day: "Fri", label: "Friday", dayOfWeek: 5 },
+  { day: "Sat", label: "Saturday", dayOfWeek: 6 },
+  { day: "Sun", label: "Sunday", dayOfWeek: 7 },
+] as const;
 
 function WorkerProfileEdit() {
   const { account, locations, workers, updateWorker } = useStore();
@@ -39,16 +48,34 @@ function WorkerProfileEdit() {
     services: worker?.services.join(", ") ?? "",
     bio: worker?.bio ?? "",
   }));
+  const [weeklyHours, setWeeklyHours] = useState(() =>
+    WEEKDAYS.map(({ day, dayOfWeek }) => {
+      const hours = worker?.schedule[day];
+      return {
+        day,
+        dayOfWeek,
+        enabled: Boolean(hours),
+        start: hours?.[0] ?? "09:00",
+        end: hours?.[1] ?? "17:00",
+      };
+    }),
+  );
   if (!worker) return null;
   const set = (k: keyof typeof form, v: string | number) => setForm((f) => ({ ...f, [k]: v }));
 
   const save = async () => {
     setBusy(true);
     try {
+      const schedule = Object.fromEntries(
+        weeklyHours
+          .filter((day) => day.enabled)
+          .map((day) => [day.day, [day.start, day.end]]),
+      ) as Worker["schedule"];
       await updateWorker(worker.id, {
         ...form,
         location: form.location as Worker["location"],
         services: form.services.split(",").map((s) => s.trim()).filter(Boolean),
+        schedule,
       });
       toast.success("Profile saved", { description: "Your changes are now stored in the database." });
     } catch (error) {
@@ -81,6 +108,31 @@ function WorkerProfileEdit() {
           <label className="grid gap-1.5 text-xs text-muted-foreground">Travel fee (R)<input type="number" className={field} value={form.travelFee} onChange={(e) => set("travelFee", Number(e.target.value))} /></label>
           <label className="grid gap-1.5 text-xs text-muted-foreground">Services (comma separated)<input className={field} value={form.services} onChange={(e) => set("services", e.target.value)} /></label>
           <label className="grid gap-1.5 text-xs text-muted-foreground sm:col-span-2">About you<Textarea rows={4} value={form.bio} onChange={(e) => set("bio", e.target.value)} /></label>
+          <section className="sm:col-span-2">
+            <div className="mb-3">
+              <h2 className="text-sm font-semibold text-foreground">Weekly availability</h2>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">Choose your local South African time. One-hour bookable slots will be generated for the next 30 days. Existing bookings stay on your calendar.</p>
+            </div>
+            <div className="space-y-2">
+              {weeklyHours.map((hours, index) => {
+                const dayLabel = WEEKDAYS[index]?.label ?? hours.day;
+                return (
+                  <div key={hours.day} className="grid grid-cols-[1fr_1fr_1fr] items-center gap-2 rounded-md border border-border p-2">
+                    <label className="flex items-center gap-2 text-xs text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={hours.enabled}
+                        onChange={(event) => setWeeklyHours((previous) => previous.map((day, dayIndex) => dayIndex === index ? { ...day, enabled: event.target.checked } : day))}
+                      />
+                      {dayLabel}
+                    </label>
+                    <label className="grid gap-1 text-[10px] text-muted-foreground">From<input aria-label={`${dayLabel} start time`} type="time" step={3600} className={field} value={hours.start} disabled={!hours.enabled} onChange={(event) => setWeeklyHours((previous) => previous.map((day, dayIndex) => dayIndex === index ? { ...day, start: event.target.value } : day))} /></label>
+                    <label className="grid gap-1 text-[10px] text-muted-foreground">To<input aria-label={`${dayLabel} end time`} type="time" step={3600} className={field} value={hours.end} disabled={!hours.enabled} onChange={(event) => setWeeklyHours((previous) => previous.map((day, dayIndex) => dayIndex === index ? { ...day, end: event.target.value } : day))} /></label>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
           <div className="sm:col-span-2 flex justify-end"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save changes"}</Button></div>
         </form>
         <aside className="panel h-fit p-5">

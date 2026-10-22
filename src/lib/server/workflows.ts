@@ -83,11 +83,14 @@ function mapRequest(row: RequestRow): ServiceRequest {
       weekday: "short",
       day: "numeric",
       month: "short",
+      timeZone: "Africa/Johannesburg",
     }),
     time: scheduled.toLocaleTimeString("en-ZA", {
       hour: "2-digit",
       minute: "2-digit",
+      timeZone: "Africa/Johannesburg",
     }),
+    scheduledAt: scheduled.toISOString(),
     location: row.WorkerSuburb,
     total: Number(row.TotalPrice),
     ...(row.JobNotes ? { notes: row.JobNotes } : {}),
@@ -408,6 +411,29 @@ const updateWorkerInput = z.object({
   travelFee: z.number().min(0).max(1_000_000),
   bio: z.string().trim().max(500),
   services: z.array(z.string().trim().min(1).max(120)).min(1).max(30),
+  schedule: z
+    .array(
+      z.object({
+        dayOfWeek: z.number().int().min(1).max(7),
+        startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+        endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+      }),
+    )
+    .max(7)
+    .superRefine((days, context) => {
+      const seenDays = new Set<number>();
+      days.forEach((day, index) => {
+        if (seenDays.has(day.dayOfWeek)) {
+          context.addIssue({ code: "custom", path: [index, "dayOfWeek"], message: "Choose each weekday only once" });
+        }
+        seenDays.add(day.dayOfWeek);
+        const startMinutes = Number(day.startTime.slice(0, 2)) * 60 + Number(day.startTime.slice(3, 5));
+        const endMinutes = Number(day.endTime.slice(0, 2)) * 60 + Number(day.endTime.slice(3, 5));
+        if (endMinutes - startMinutes < 60) {
+          context.addIssue({ code: "custom", path: [index, "endTime"], message: "Availability must include at least one full hour" });
+        }
+      });
+    }),
 });
 
 export const updateWorkerProfile = createServerFn({ method: "POST" })
@@ -430,6 +456,12 @@ export const updateWorkerProfile = createServerFn({ method: "POST" })
         `);
       const suburbId = suburb.recordset[0]?.SuburbId;
       if (!suburbId) throw new Error("Choose an active suburb");
+
+      const workerRecord = await new sql.Request(transaction)
+        .input("UserId", sql.Int, worker.userId)
+        .query<{ WorkerId: number }>(`SELECT WorkerId FROM dbo.Workers WHERE UserId = @UserId`);
+      const workerId = workerRecord.recordset[0]?.WorkerId;
+      if (!workerId) throw new Error("Your worker profile could not be found");
 
       await new sql.Request(transaction)
         .input("UserId", sql.Int, worker.userId)
@@ -483,6 +515,92 @@ export const updateWorkerProfile = createServerFn({ method: "POST" })
             FROM dbo.Workers w WHERE w.UserId = @UserId;
         `);
       }
+
+      await new sql.Request(transaction)
+        .input("WorkerId", sql.Int, workerId)
+        .query(`DELETE FROM dbo.WeeklyHours WHERE WorkerId = @WorkerId`);
+      for (const day of data.schedule) {
+        await new sql.Request(transaction)
+          .input("WorkerId", sql.Int, workerId)
+          .input("DayOfWeek", sql.TinyInt, day.dayOfWeek)
+          .input("StartTime", sql.VarChar(5), day.startTime)
+          .input("EndTime", sql.VarChar(5), day.endTime)
+          .query(`
+            INSERT dbo.WeeklyHours (WorkerId, DayOfWeek, StartTime, EndTime, IsAvailable)
+            VALUES (@WorkerId, @DayOfWeek, CONVERT(TIME(0), @StartTime), CONVERT(TIME(0), @EndTime), 1)
+          `);
+      }
+
+      await new sql.Request(transaction)
+        .input("WorkerId", sql.Int, workerId)
+        .query(`
+          CREATE TABLE #GeneratedAvailability (
+            StartsAt DATETIME2(0) NOT NULL PRIMARY KEY,
+            EndsAt DATETIME2(0) NOT NULL
+          );
+
+          DECLARE @LocalToday DATE = CONVERT(
+            DATE,
+            SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'South Africa Standard Time'
+          );
+
+          ;WITH DayNumbers AS (
+            SELECT TOP (30)
+              CONVERT(INT, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1) AS DayOffset
+            FROM sys.all_objects
+          ),
+          WorkDates AS (
+            SELECT DATEADD(DAY, DayOffset, @LocalToday) AS WorkDate
+            FROM DayNumbers
+          ),
+          HourOffsets AS (
+            SELECT TOP (24)
+              CONVERT(INT, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1) AS HourOffset
+            FROM sys.all_objects
+          ),
+          LocalSlots AS (
+            SELECT DATEADD(
+              MINUTE,
+              DATEDIFF(MINUTE, CONVERT(TIME(0), '00:00'), wh.StartTime) + hours.HourOffset * 60,
+              CONVERT(DATETIME2(0), dates.WorkDate)
+            ) AS LocalStart
+            FROM WorkDates dates
+            INNER JOIN dbo.WeeklyHours wh
+              ON wh.WorkerId = @WorkerId
+             AND wh.IsAvailable = 1
+             AND wh.DayOfWeek = CONVERT(TINYINT, (DATEDIFF(DAY, CONVERT(DATE, '19000101'), dates.WorkDate) % 7) + 1)
+            CROSS JOIN HourOffsets hours
+            WHERE hours.HourOffset < DATEDIFF(MINUTE, wh.StartTime, wh.EndTime) / 60
+          ),
+          UtcSlots AS (
+            SELECT CONVERT(
+              DATETIME2(0),
+              (LocalStart AT TIME ZONE 'South Africa Standard Time') AT TIME ZONE 'UTC'
+            ) AS StartsAt
+            FROM LocalSlots
+          )
+          INSERT #GeneratedAvailability (StartsAt, EndsAt)
+          SELECT StartsAt, DATEADD(HOUR, 1, StartsAt)
+          FROM UtcSlots
+          WHERE StartsAt > SYSUTCDATETIME();
+
+          UPDATE a
+          SET SlotStatus = CASE WHEN generated.StartsAt IS NULL THEN N'Blocked' ELSE N'Available' END,
+              EndsAt = COALESCE(generated.EndsAt, a.EndsAt)
+          FROM dbo.AvailabilitySlots a
+          LEFT JOIN #GeneratedAvailability generated ON generated.StartsAt = a.StartsAt
+          WHERE a.WorkerId = @WorkerId
+            AND a.SlotStatus IN (N'Available', N'Blocked')
+            AND a.StartsAt > SYSUTCDATETIME();
+
+          INSERT dbo.AvailabilitySlots (WorkerId, StartsAt, EndsAt, SlotStatus)
+          SELECT @WorkerId, generated.StartsAt, generated.EndsAt, N'Available'
+          FROM #GeneratedAvailability generated
+          WHERE NOT EXISTS (
+            SELECT 1 FROM dbo.AvailabilitySlots a
+            WHERE a.WorkerId = @WorkerId AND a.StartsAt = generated.StartsAt
+          );
+        `);
       await transaction.commit();
     } catch (error) {
       await transaction.rollback();
