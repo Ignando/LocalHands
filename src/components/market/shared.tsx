@@ -1,6 +1,7 @@
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { BadgeCheck, BriefcaseBusiness, House, LogOut, MapPin, ShieldCheck, Star, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { getCategory, rand, type Category, type Review, type Worker } from "@/lib/mock-data";
@@ -129,9 +130,23 @@ export function DashboardCard({ label, value, sub, tone }: { label: string; valu
 }
 
 export function SignOut() {
+  const { signOut } = useStore();
   const navigate = useNavigate();
+  const router = useRouter();
   return (
-    <Button size="sm" variant="outline" onClick={() => navigate({ to: "/signin" })}>
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={async () => {
+        try {
+          await signOut();
+          await router.invalidate();
+          await navigate({ to: "/signin" });
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Could not sign out");
+        }
+      }}
+    >
       <LogOut className="size-3.5" />Sign out
     </Button>
   );
@@ -149,7 +164,7 @@ export function Navbar() {
             </div>
             <div>
               <div className="font-display text-[15px] font-semibold leading-none">LocalHands</div>
-              <div className="mt-0.5 font-mono text-[10px] tracking-wide text-muted-foreground">CAPE TOWN · DEMO</div>
+              <div className="mt-0.5 font-mono text-[10px] tracking-wide text-muted-foreground">CAPE TOWN · LOCAL SERVICES</div>
             </div>
           </Link>
           {role === "customer" && (
@@ -161,7 +176,7 @@ export function Navbar() {
           {role === "worker" && <nav className="hidden gap-5 text-sm text-muted-foreground md:flex"><Link to="/worker-dashboard" className="flex items-center gap-1.5 hover:text-foreground" activeProps={{ className: "text-foreground" }}><House className="size-3.5" />Worker workspace</Link><Link to="/worker-profile" className="flex items-center gap-1.5 hover:text-foreground" activeProps={{ className: "text-foreground" }}><UserRound className="size-3.5" />Profile</Link></nav>}
           {role === "admin" && <nav className="hidden text-sm text-muted-foreground md:flex"><Link to="/admin" className="flex items-center gap-1.5 hover:text-foreground" activeProps={{ className: "text-foreground" }}><ShieldCheck className="size-3.5" />Review queue</Link></nav>}
         </div>
-        <SignOut />
+        {role ? <SignOut /> : <Button asChild size="sm"><Link to="/signin">Sign in</Link></Button>}
       </div>
     </header>
   );

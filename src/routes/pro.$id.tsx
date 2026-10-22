@@ -1,23 +1,25 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BadgeCheck, CalendarDays, Check, MapPin, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { Avatar, ReviewCard, SectionHead, Stars, StatusBadge } from "@/components/market/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { getCategory, rand, upcomingSlots } from "@/lib/mock-data";
+import { getCategory, rand } from "@/lib/mock-data";
 import { getReviewsForWorker, getWorkerById } from "@/lib/server/workers";
+import { getAvailableSlots } from "@/lib/server/workflows";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/pro/$id")({
   loader: async ({ params }) => {
-    const [worker, reviews] = await Promise.all([
+    const [worker, reviews, availableSlots] = await Promise.all([
       getWorkerById({ data: params.id }),
       getReviewsForWorker({ data: params.id }),
+      getAvailableSlots({ data: params.id }),
     ]);
     if (!worker) throw notFound();
-    return { worker, reviews };
+    return { worker, reviews, availableSlots };
   },
   head: ({ loaderData }) => {
     const title = loaderData ? `${loaderData.worker.name} — LocalHands` : "Worker unavailable — LocalHands";
@@ -28,26 +30,49 @@ export const Route = createFileRoute("/pro/$id")({
 });
 
 function WorkerProfile() {
-  const { worker: seed, reviews } = Route.useLoaderData();
-  const { addRequest, markViewed, workers } = useStore();
+  const { worker: seed, reviews, availableSlots } = Route.useLoaderData();
+  const { account, addRequest, markViewed, workers } = useStore();
   const worker = workers.find((w) => w.id === seed.id) ?? seed;
   const category = getCategory(worker.category);
-  const slots = useMemo(() => upcomingSlots(worker), [worker]);
+  const slots = availableSlots.map(({ startsAt }) => {
+    const starts = new Date(startsAt);
+    return {
+      key: startsAt,
+      startsAt,
+      label: starts.toLocaleDateString("en-ZA", { weekday: "short" }),
+      date: starts.toLocaleDateString("en-ZA", { day: "numeric", month: "short" }),
+      time: starts.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }),
+    };
+  });
 
   const [service, setService] = useState(worker.services[0] ?? "");
-  const [selected, setSelected] = useState<{ date: string; label: string; time: string }>();
+  const [selected, setSelected] = useState<{ startsAt: string; date: string; label: string; time: string }>();
   const [notes, setNotes] = useState("");
 
-  useMemo(() => markViewed(worker.id), [markViewed, worker.id]);
+  const lastMarkedWorker = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastMarkedWorker.current === worker.id) return;
+    lastMarkedWorker.current = worker.id;
+    markViewed(worker.id);
+  }, [markViewed, worker.id]);
 
   const total = worker.startPrice + worker.travelFee;
-  const submit = () => {
+  const submit = async () => {
+    if (!account || account.role !== "customer") {
+      toast.error("Sign in with a customer account to book a worker");
+      return;
+    }
     if (!selected) {
       toast.error("Choose an available time first");
       return;
     }
-    addRequest({ workerId: worker.id, service, date: `${selected.label} ${selected.date}`, time: selected.time, location: worker.location, total, notes });
-    toast.success("Request sent", { description: `${worker.name} can now review your request.` });
+    try {
+      await addRequest({ workerId: worker.id, service, startsAt: selected.startsAt, notes });
+      toast.success("Booking request sent", { description: `${worker.name} can now review it.` });
+      setSelected(undefined);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not send the booking request");
+    }
   };
 
   return (
@@ -88,10 +113,10 @@ function WorkerProfile() {
         <aside className="panel h-fit p-5 lg:sticky lg:top-24">
           <div className="flex items-end justify-between"><div><div className="eyebrow">Request a booking</div><div className="mt-2 text-2xl font-semibold">{rand(total)}</div></div><span className="text-xs text-muted-foreground">estimated total</span></div>
           <label className="mt-5 block"><span className="mb-2 block font-mono text-[10px] uppercase text-muted-foreground">Service</span><select className="w-full rounded-md border border-input bg-surface px-3 py-2 text-sm outline-none" value={service} onChange={(event) => setService(event.target.value)}>{worker.services.map((item) => <option key={item}>{item}</option>)}</select></label>
-          <div className="mt-5"><div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase text-muted-foreground"><CalendarDays className="size-3.5" />Next available</div><div className="grid grid-cols-2 gap-2">{slots.flatMap((day) => day.slots.slice(0, 1).map((time) => ({ ...day, time }))).slice(0, 6).map((slot) => <Button key={`${slot.key}-${slot.time}`} type="button" size="sm" variant={selected?.date === slot.date ? "default" : "outline"} className={cn("h-auto flex-col py-2", selected?.date === slot.date && "border-primary")} onClick={() => setSelected({ date: slot.date, label: slot.label, time: slot.time })}><span>{slot.label} · {slot.date}</span><span className="font-mono text-[10px] opacity-75">{slot.time}</span></Button>)}</div></div>
+          <div className="mt-5"><div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase text-muted-foreground"><CalendarDays className="size-3.5" />Available times</div>{slots.length ? <div className="grid grid-cols-2 gap-2">{slots.slice(0, 6).map((slot) => <Button key={slot.key} type="button" size="sm" variant={selected?.startsAt === slot.startsAt ? "default" : "outline"} className={cn("h-auto flex-col py-2", selected?.startsAt === slot.startsAt && "border-primary")} onClick={() => setSelected({ startsAt: slot.startsAt, date: slot.date, label: slot.label, time: slot.time })}><span>{slot.label} · {slot.date}</span><span className="font-mono text-[10px] opacity-75">{slot.time}</span></Button>)}</div> : <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">No bookable times are currently available.</p>}</div>
           <label className="mt-5 block"><span className="mb-2 block font-mono text-[10px] uppercase text-muted-foreground">Job notes</span><Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Briefly describe what you need" /></label>
           <div className="mt-5 space-y-2 border-t border-border pt-4 text-xs text-muted-foreground"><div className="flex justify-between"><span>Service estimate</span><span>{rand(worker.startPrice)}</span></div><div className="flex justify-between"><span>Travel fee</span><span>{worker.travelFee ? rand(worker.travelFee) : "Included"}</span></div></div>
-          <Button className="mt-5 w-full" onClick={submit}>Send request</Button>
+          {account?.role === "customer" ? <Button className="mt-5 w-full" onClick={submit}>Send request</Button> : <Button asChild className="mt-5 w-full"><Link to="/signin">Sign in to book</Link></Button>}
           <p className="mt-3 text-center text-[11px] text-muted-foreground">No payment required for this prototype.</p>
         </aside>
       </div>

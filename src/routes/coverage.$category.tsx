@@ -1,13 +1,16 @@
-import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { createFileRoute, Link, notFound, redirect } from "@tanstack/react-router";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Avatar } from "@/components/market/shared";
 import { Button } from "@/components/ui/button";
 import { getCategory } from "@/lib/mock-data";
+import { getCurrentAccount } from "@/lib/server/auth";
 import { useStore } from "@/lib/store";
 
 export const Route = createFileRoute("/coverage/$category")({
-  loader: ({ params }) => {
+  loader: async ({ params }) => {
+    const account = await getCurrentAccount();
+    if (account?.role !== "admin") throw redirect({ to: "/signin" });
     const cat = getCategory(params.category);
     if (!cat) throw notFound();
     return { cat };
@@ -24,6 +27,14 @@ function CoveragePage() {
   const { cat } = Route.useLoaderData();
   const { workers, removeWorker } = useStore();
   const list = workers.filter((w) => w.category === cat.slug);
+  const remove = async (id: string, name: string) => {
+    try {
+      await removeWorker(id);
+      toast.success(`${name} removed from listings`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not remove worker");
+    }
+  };
   return (
     <div className="animate-rise py-10">
       <Link to="/admin" className="font-mono text-[11px] text-muted-foreground hover:text-foreground">← review queue</Link>
@@ -37,7 +48,7 @@ function CoveragePage() {
               <Link to="/pro/$id" params={{ id: w.id }} className="font-display text-sm font-semibold hover:text-primary">{w.name}</Link>
               <div className="font-mono text-[11px] text-muted-foreground">{w.location} · ★ {w.rating.toFixed(1)} · {w.jobs} jobs</div>
             </div>
-            <Button size="sm" variant="outline" className="ml-auto text-destructive" onClick={() => { removeWorker(w.id); toast.success(`${w.name} removed`); }}>
+            <Button size="sm" variant="outline" className="ml-auto text-destructive" onClick={() => void remove(w.id, w.name)}>
               <Trash2 className="size-3.5" />Remove
             </Button>
           </article>

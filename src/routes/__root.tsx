@@ -15,6 +15,8 @@ import { reportAppError } from "../lib/error-reporting";
 import { StoreProvider } from "@/lib/store";
 import { Navbar } from "@/components/market/shared";
 import { Toaster } from "@/components/ui/sonner";
+import { getCurrentAccount } from "@/lib/server/auth";
+import { getActiveLocations, getWorkspaceData } from "@/lib/server/workflows";
 import { getFeaturedReviews, getWorkers } from "@/lib/server/workers";
 
 function NotFoundComponent() {
@@ -67,8 +69,14 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   loader: async () => {
-    const [workers, reviews] = await Promise.all([getWorkers(), getFeaturedReviews()]);
-    return { workers, reviews };
+    const [account, workspace, workers, reviews, locations] = await Promise.all([
+      getCurrentAccount(),
+      getWorkspaceData(),
+      getWorkers(),
+      getFeaturedReviews(),
+      getActiveLocations(),
+    ]);
+    return { account, ...workspace, workers, reviews, locations };
   },
   head: () => ({
     meta: [
@@ -112,11 +120,18 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  const { workers, reviews } = Route.useLoaderData();
+  const { account, applications, requests, workers, reviews, locations } = Route.useLoaderData();
 
   return (
     <QueryClientProvider client={queryClient}>
-      <StoreProvider initialWorkers={workers} initialReviews={reviews}>
+      <StoreProvider
+        initialAccount={account}
+        initialApplications={applications}
+        initialRequests={requests}
+        initialWorkers={workers}
+        initialReviews={reviews}
+        initialLocations={locations}
+      >
         <div className="relative min-h-screen">
           <div className="bg-grid pointer-events-none fixed inset-0 opacity-70" />
           <div className="bg-glow pointer-events-none fixed inset-0" />

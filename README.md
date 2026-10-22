@@ -6,13 +6,13 @@ LocalHands is a local services marketplace prototype developed as a final-year s
 
 The platform is designed to connect customers with independent local service providers across Cape Town.
 
-## Planned features
+## Features
 
-- Browse service categories and available workers.
-- View worker profiles, descriptions, and reviews.
-- Submit applications to become a service provider.
-- Manage worker profiles and service requests.
-- Provide administrative tools for managing workers.
+- Browse SQL-backed worker listings, profiles, reviews and available booking slots.
+- Create a customer account and sign in with an email and password.
+- Submit worker applications and review them as an admin.
+- Create and manage bookings, worker profiles and listings.
+- Assign customer, worker and admin access from the database account role.
 
 ## Technology stack
 
@@ -20,7 +20,7 @@ The platform is designed to connect customers with independent local service pro
 - Routing: TanStack Router / TanStack Start
 - Styling: Tailwind CSS
 - Build tooling: Vite
-- Database: Microsoft SQL Server (worker listings, profiles and reviews are read server-side)
+- Database: Microsoft SQL Server (accounts, sessions, applications, bookings, workers and reviews)
 
 ## Development
 
@@ -40,7 +40,7 @@ The development server's local URL will be shown in the terminal.
 
 ## Database
 
-Run `database/LocalHandsDB.sql` in SQL Server Management Studio to create and seed the database. The server-side worker and review queries use the Windows ODBC driver through `msnodesqlv8` and Windows trusted authentication.
+Run `database/LocalHandsDB.sql` in SQL Server Management Studio to create or update the schema. The script adds password/session storage, removes only the old known fictional application and booking seed rows, and seeds fictional demo worker profiles. Demo workers start with zero reviews and completed jobs; those figures are recorded only through real database workflows. Database access uses the Windows ODBC driver through `msnodesqlv8` and Windows trusted authentication.
 
 Set these environment variables before starting the app:
 
@@ -54,8 +54,18 @@ Verify the ODBC driver in Windows PowerShell with:
 Get-OdbcDriver -Name "*SQL Server*"
 ```
 
-The database connection is required for the app routes that load marketplace data. Application submissions, bookings, and admin/worker updates are still prototype state and have not yet been moved to SQL Server.
+The database connection is required for the app. Application, booking, admin and worker changes are validated and written through server-side SQL queries; authorization is checked against the signed-in database account.
 
-## Project status
+## Authentication setup
 
-This project is under active development. Marketplace worker listings, profiles and reviews are loaded from SQL Server; application submissions, bookings and admin/worker updates are still prototype-only.
+The SQL seed creates `admin.demo@localhands.example` and worker demo accounts without passwords. Set an account password once the database is ready. In PowerShell, set the account email and run the password setup command; it prompts for a password without echoing it:
+
+```powershell
+$env:LOCALHANDS_ACCOUNT_EMAIL = "admin.demo@localhands.example"
+npm run auth:set-password
+Remove-Item Env:LOCALHANDS_ACCOUNT_EMAIL
+```
+
+Repeat with an existing worker email (for example `thabo.demo@localhands.example`) if you want to sign in as a worker. Customers can create accounts from the sign-in screen. Worker applicants start as customers; an admin approval creates their worker profile and changes their database role. The app uses HTTP-only database-backed sessions; no default passwords are committed.
+
+Password reset/email verification are not implemented yet. This remains a prototype and should not be exposed publicly without additional production security controls.

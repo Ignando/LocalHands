@@ -19,6 +19,13 @@ GO
 USE LocalHandsDB;
 GO
 
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET QUOTED_IDENTIFIER ON;
+SET NUMERIC_ROUNDABORT OFF;
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 GO
@@ -63,6 +70,7 @@ BEGIN
         UserId INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Users PRIMARY KEY,
         FullName NVARCHAR(100) NOT NULL,
         Email NVARCHAR(254) NOT NULL,
+        PasswordHash NVARCHAR(512) NULL,
         Phone NVARCHAR(20) NULL,
         Role NVARCHAR(10) NOT NULL CONSTRAINT DF_Users_Role DEFAULT (N'Customer'),
         SuburbId INT NULL,
@@ -72,6 +80,25 @@ BEGIN
         CONSTRAINT UQ_Users_Email UNIQUE (Email),
         CONSTRAINT CK_Users_Role CHECK (Role IN (N'Customer', N'Worker', N'Admin')),
         CONSTRAINT FK_Users_Suburbs FOREIGN KEY (SuburbId) REFERENCES dbo.Suburbs(SuburbId)
+    );
+END;
+GO
+
+IF COL_LENGTH(N'dbo.Users', N'PasswordHash') IS NULL
+    ALTER TABLE dbo.Users ADD PasswordHash NVARCHAR(512) NULL;
+GO
+
+IF OBJECT_ID(N'dbo.UserSessions', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.UserSessions (
+        TokenHash BINARY(32) NOT NULL CONSTRAINT PK_UserSessions PRIMARY KEY,
+        UserId INT NOT NULL,
+        CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_UserSessions_CreatedAt DEFAULT (SYSUTCDATETIME()),
+        ExpiresAt DATETIME2(0) NOT NULL,
+        RevokedAt DATETIME2(0) NULL,
+        CONSTRAINT FK_UserSessions_Users FOREIGN KEY (UserId) REFERENCES dbo.Users(UserId),
+        CONSTRAINT CK_UserSessions_ExpiresAt CHECK (ExpiresAt > CreatedAt),
+        CONSTRAINT CK_UserSessions_RevokedAt CHECK (RevokedAt IS NULL OR RevokedAt >= CreatedAt)
     );
 END;
 GO
@@ -415,6 +442,12 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AvailabilitySlots_Worker_Start_Status' AND object_id = OBJECT_ID(N'dbo.AvailabilitySlots'))
     CREATE INDEX IX_AvailabilitySlots_Worker_Start_Status ON dbo.AvailabilitySlots(WorkerId, StartsAt, SlotStatus);
 GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_UserSessions_UserId_ExpiresAt' AND object_id = OBJECT_ID(N'dbo.UserSessions'))
+    CREATE INDEX IX_UserSessions_UserId_ExpiresAt ON dbo.UserSessions(UserId, ExpiresAt) INCLUDE (RevokedAt);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_UserSessions_ExpiresAt' AND object_id = OBJECT_ID(N'dbo.UserSessions'))
+    CREATE INDEX IX_UserSessions_ExpiresAt ON dbo.UserSessions(ExpiresAt);
+GO
 GO
 
 /* =========================================================
@@ -476,20 +509,20 @@ BEGIN
            v.About, v.PhotoUrl, v.QualifiedTitle, v.IdentityVerified, v.ExperienceVerified, v.IsQualified,
            N'Available', N'Live', v.RatingAverage, v.ReviewCount, v.JobsCompleted
     FROM (VALUES
-      (N'thabo',N'Thabo Mokoena',N'garden',N'Bellville',6,250,50,N'Independent gardener with 6 years of experience maintaining residential gardens around Cape Town. I bring my own mower and trimmer.',N'/assets/thabo.jpg',CAST(NULL AS NVARCHAR(150)),1,1,0,4.80,43,127),
-      (N'johan',N'Johan van Wyk',N'garden',N'Durbanville',11,450,80,N'Landscaper focusing on water-wise gardens and drip irrigation for Cape summers.',NULL,NULL,1,1,0,4.90,61,188),
-      (N'sipho',N'Sipho Dlamini',N'garden',N'Goodwood',3,200,40,N'Building my reputation one garden at a time. Reliable, punctual and passionate about veggie patches.',NULL,NULL,1,0,0,4.60,18,41),
-      (N'zanele',N'Zanele Khumalo',N'garden',N'Table View',5,230,50,N'Weekly and fortnightly garden care along the West Coast suburbs.',NULL,NULL,0,0,0,4.70,29,84),
-      (N'naledi',N'Naledi Mokoena',N'cleaning',N'Parow',8,220,40,N'Thorough, friendly home cleaner. I bring my own eco-friendly supplies.',N'/assets/naledi.jpg',NULL,1,1,0,4.90,94,260),
-      (N'fatima',N'Fatima Adams',N'cleaning',N'Observatory',4,260,50,N'Small office and studio cleaning around Obs, Woodstock and the CBD.',NULL,NULL,1,0,0,4.70,37,96),
-      (N'liam',N'Liam Jacobs',N'it',N'Milnerton',5,300,60,N'Computer technician — I will fix it at your kitchen table and explain what went wrong.',NULL,NULL,1,1,0,4.80,52,140),
-      (N'keagan',N'Keagan Fortuin',N'it',N'Cape Town CBD',2,250,50,N'IT student offering affordable Wi-Fi mesh and smart home setups.',NULL,NULL,1,0,0,4.50,12,27),
-      (N'siyabonga',N'Siyabonga Dlamini',N'electrical',N'Stellenbosch',9,550,100,N'Qualified electrician specialising in load-shedding backup: inverters, batteries and rooftop solar. COC issued.',NULL,N'Registered Electrician · Wireman''s Licence',1,1,1,4.90,48,112),
-      (N'ayesha',N'Ayesha Khan',N'tutoring',N'Observatory',4,220,0,N'Maths and science tutor for Grades 8–12 and first-year university. Patient, structured and exam-focused.',N'/assets/ayesha.jpg',N'BSc Mathematics (UCT)',1,1,1,5.00,33,210),
-      (N'daniel',N'Daniel Petersen',N'home-repairs',N'Goodwood',12,380,60,N'Burst pipes, geysers, leaking taps — same-day call-outs across the Northern Suburbs.',N'/assets/daniel.jpg',N'Qualified Plumber (PIRB registered)',1,1,1,4.80,71,305),
-      (N'pieter',N'Pieter Botha',N'home-repairs',N'Durbanville',7,320,60,N'Neat, careful painter and handyman. Free quote on site.',NULL,NULL,1,1,0,4.60,25,78),
-      (N'musa',N'Musa Ndlovu',N'automotive',N'Parow',3,180,30,N'Waterless mobile car wash and valet at your home or office.',NULL,NULL,1,0,0,4.70,40,150),
-      (N'bongani',N'Bongani Zulu',N'moving',N'Milnerton',6,400,80,N'Bakkie and two strong hands. Small moves and removals anywhere in the metro.',NULL,NULL,1,1,0,4.80,56,190)
+      (N'thabo',N'Thabo Mokoena',N'garden',N'Bellville',6,250,50,N'Independent gardener with 6 years of experience maintaining residential gardens around Cape Town. I bring my own mower and trimmer.',N'/assets/thabo.jpg',CAST(NULL AS NVARCHAR(150)),1,1,0,0,0,0),
+      (N'johan',N'Johan van Wyk',N'garden',N'Durbanville',11,450,80,N'Landscaper focusing on water-wise gardens and drip irrigation for Cape summers.',NULL,NULL,1,1,0,0,0,0),
+      (N'sipho',N'Sipho Dlamini',N'garden',N'Goodwood',3,200,40,N'Building my reputation one garden at a time. Reliable, punctual and passionate about veggie patches.',NULL,NULL,1,0,0,0,0,0),
+      (N'zanele',N'Zanele Khumalo',N'garden',N'Table View',5,230,50,N'Weekly and fortnightly garden care along the West Coast suburbs.',NULL,NULL,0,0,0,0,0,0),
+      (N'naledi',N'Naledi Mokoena',N'cleaning',N'Parow',8,220,40,N'Thorough, friendly home cleaner. I bring my own eco-friendly supplies.',N'/assets/naledi.jpg',NULL,1,1,0,0,0,0),
+      (N'fatima',N'Fatima Adams',N'cleaning',N'Observatory',4,260,50,N'Small office and studio cleaning around Obs, Woodstock and the CBD.',NULL,NULL,1,0,0,0,0,0),
+      (N'liam',N'Liam Jacobs',N'it',N'Milnerton',5,300,60,N'Computer technician — I will fix it at your kitchen table and explain what went wrong.',NULL,NULL,1,1,0,0,0,0),
+      (N'keagan',N'Keagan Fortuin',N'it',N'Cape Town CBD',2,250,50,N'IT student offering affordable Wi-Fi mesh and smart home setups.',NULL,NULL,1,0,0,0,0,0),
+      (N'siyabonga',N'Siyabonga Dlamini',N'electrical',N'Stellenbosch',9,550,100,N'Qualified electrician specialising in load-shedding backup: inverters, batteries and rooftop solar. COC issued.',NULL,N'Registered Electrician · Wireman''s Licence',1,1,1,0,0,0),
+      (N'ayesha',N'Ayesha Khan',N'tutoring',N'Observatory',4,220,0,N'Maths and science tutor for Grades 8–12 and first-year university. Patient, structured and exam-focused.',N'/assets/ayesha.jpg',N'BSc Mathematics (UCT)',1,1,1,0,0,0),
+      (N'daniel',N'Daniel Petersen',N'home-repairs',N'Goodwood',12,380,60,N'Burst pipes, geysers, leaking taps — same-day call-outs across the Northern Suburbs.',N'/assets/daniel.jpg',N'Qualified Plumber (PIRB registered)',1,1,1,0,0,0),
+      (N'pieter',N'Pieter Botha',N'home-repairs',N'Durbanville',7,320,60,N'Neat, careful painter and handyman. Free quote on site.',NULL,NULL,1,1,0,0,0,0),
+      (N'musa',N'Musa Ndlovu',N'automotive',N'Parow',3,180,30,N'Waterless mobile car wash and valet at your home or office.',NULL,NULL,1,0,0,0,0,0),
+      (N'bongani',N'Bongani Zulu',N'moving',N'Milnerton',6,400,80,N'Bakkie and two strong hands. Small moves and removals anywhere in the metro.',NULL,NULL,1,1,0,0,0,0)
     ) v(PublicId,FullName,CategorySlug,SuburbName,YearsExperience,StartingPrice,TravelFee,About,PhotoUrl,QualifiedTitle,IdentityVerified,ExperienceVerified,IsQualified,RatingAverage,ReviewCount,JobsCompleted)
     JOIN dbo.Users u ON u.Email = LOWER(v.PublicId) + N'.demo@localhands.example'
     JOIN dbo.Categories c ON c.Slug = v.CategorySlug
@@ -524,29 +557,29 @@ BEGIN
 END;
 GO
 
-/* Seed the six applications from the prototype queue, using fictional example details. */
-IF NOT EXISTS (SELECT 1 FROM dbo.WorkerApplications)
-BEGIN
-    INSERT dbo.WorkerApplications
-      (FullName, Email, Phone, CategoryId, SuburbId, MainService, YearsExperience, SubmittedAt,
-       IdentityStatus, QualificationStatus, ReferenceCount, Description, StartingPrice, Status)
-    SELECT v.FullName, v.Email, v.Phone, c.CategoryId, s.SuburbId, v.MainService, v.YearsExperience,
-           v.SubmittedAt, v.IdentityStatus, v.QualificationStatus, v.ReferenceCount, v.Description, v.StartingPrice, v.Status
-    FROM (VALUES
-      (N'Lindiwe Mthembu',N'lindiwe.m@example.co.za',N'072 555 0141',N'cleaning',N'Bellville',N'Deep Cleaning',4,CONVERT(DATETIME2(0),'2026-10-02'),N'Verified',N'Not required',2,N'Experienced domestic cleaner looking for more weekly clients.',220,N'Application Submitted'),
-      (N'Riaan Steyn',N'riaan.s@example.co.za',N'083 555 0177',N'electrical',N'Durbanville',N'Inverter Installation',7,CONVERT(DATETIME2(0),'2026-09-29'),N'Verified',N'Pending',3,N'Qualified electrician, recently went independent.',500,N'Under Review'),
-      (N'Yusuf Hendricks',N'yusuf.h@example.co.za',N'061 555 0102',N'it',N'Observatory',N'Computer Repair',2,CONVERT(DATETIME2(0),'2026-09-27'),N'Pending',N'Not required',1,N'Final-year IT student offering repairs after hours.',200,N'Interview Required'),
-      (N'Nomsa Shabalala',N'nomsa.s@example.co.za',N'079 555 0190',N'tutoring',N'Stellenbosch',N'English',3,CONVERT(DATETIME2(0),'2026-09-24'),N'Verified',N'Verified',2,N'B.Ed graduate tutoring languages for Grades 4–12.',180,N'Approved'),
-      (N'Kyle Daniels',N'kyle.d@example.co.za',N'082 555 0123',N'automotive',N'Parow',N'Vehicle Diagnostics',1,CONVERT(DATETIME2(0),'2026-09-20'),N'Verified',N'Pending',0,N'Hobby mechanic wanting to start a mobile service.',300,N'Rejected'),
-      (N'Thabo Mokoena',N'thabo.app@example.co.za',N'074 555 0166',N'garden',N'Bellville',N'General Garden Maintenance',6,CONVERT(DATETIME2(0),'2026-03-12'),N'Verified',N'Not required',3,N'Independent gardener, 6 years experience.',250,N'Approved')
-    ) v(FullName,Email,Phone,CategorySlug,SuburbName,MainService,YearsExperience,SubmittedAt,IdentityStatus,QualificationStatus,ReferenceCount,Description,StartingPrice,Status)
-    JOIN dbo.Categories c ON c.Slug = v.CategorySlug
-    JOIN dbo.Suburbs s ON s.Name = v.SuburbName
-    WHERE NOT EXISTS (SELECT 1 FROM dbo.WorkerApplications a WHERE a.Email = v.Email);
-END;
+/* Remove only the known fictional application seed rows from earlier script versions. */
+DELETE docs
+FROM dbo.WorkerDocuments docs
+INNER JOIN dbo.WorkerApplications a ON a.ApplicationId = docs.ApplicationId
+WHERE a.Email IN (
+    N'lindiwe.m@example.co.za', N'riaan.s@example.co.za', N'yusuf.h@example.co.za',
+    N'nomsa.s@example.co.za', N'kyle.d@example.co.za', N'thabo.app@example.co.za'
+);
+DELETE actions
+FROM dbo.AdminActions actions
+INNER JOIN dbo.WorkerApplications a ON a.ApplicationId = actions.ApplicationId
+WHERE a.Email IN (
+    N'lindiwe.m@example.co.za', N'riaan.s@example.co.za', N'yusuf.h@example.co.za',
+    N'nomsa.s@example.co.za', N'kyle.d@example.co.za', N'thabo.app@example.co.za'
+);
+DELETE FROM dbo.WorkerApplications
+WHERE Email IN (
+    N'lindiwe.m@example.co.za', N'riaan.s@example.co.za', N'yusuf.h@example.co.za',
+    N'nomsa.s@example.co.za', N'kyle.d@example.co.za', N'thabo.app@example.co.za'
+);
 GO
 
-/* Demo customer and admin accounts (prototype accounts; no passwords are stored). */
+/* Development accounts start without passwords; configure them with npm run auth:set-password. */
 IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE Email = N'customer.demo@localhands.example')
     INSERT dbo.Users (FullName, Email, Phone, Role) VALUES (N'Demo Customer', N'customer.demo@localhands.example', N'071 000 0001', N'Customer');
 IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE Email = N'admin.demo@localhands.example')
@@ -586,21 +619,45 @@ BEGIN
 END;
 GO
 
-/* Three demo requests, linked to real service rows. Slot linkage is nullable for historic jobs. */
-IF NOT EXISTS (SELECT 1 FROM dbo.ServiceRequests)
-BEGIN
-    DECLARE @CustomerId INT = (SELECT UserId FROM dbo.Users WHERE Email = N'customer.demo@localhands.example');
-    INSERT dbo.ServiceRequests
-      (PublicReference, CustomerId, WorkerId, ServiceId, SlotId, JobNotes, ServiceEstimate, TravelFee, Status, ScheduledAt, CreatedAt, CompletedAt)
-    SELECT v.PublicReference, @CustomerId, w.WorkerId, ws.ServiceId, NULL, v.JobNotes, v.ServiceEstimate, v.TravelFee, v.Status, v.ScheduledAt, v.CreatedAt, v.CompletedAt
-    FROM (VALUES
-      (N'SR-1038',N'thabo',N'Hedge & Tree Trimming',N'Please trim the front hedge as well.',350,50,N'Pending',CONVERT(DATETIME2(0),'2026-11-05T09:00:00'),CONVERT(DATETIME2(0),'2026-10-20'),CAST(NULL AS DATETIME2(0))),
-      (N'SR-1031',N'thabo',N'Lawn Cutting',N'Please use the side gate.',250,50,N'Accepted',CONVERT(DATETIME2(0),'2026-11-06T11:00:00'),CONVERT(DATETIME2(0),'2026-10-18'),CAST(NULL AS DATETIME2(0))),
-      (N'SR-1019',N'thabo',N'General Garden Maintenance',N'Routine garden maintenance.',300,50,N'Completed',CONVERT(DATETIME2(0),'2026-09-28T09:00:00'),CONVERT(DATETIME2(0),'2026-09-25'),CONVERT(DATETIME2(0),'2026-09-28T11:00:00'))
-    ) v(PublicReference,PublicId,ServiceName,JobNotes,ServiceEstimate,TravelFee,Status,ScheduledAt,CreatedAt,CompletedAt)
-    JOIN dbo.Workers w ON w.PublicId = v.PublicId
-    JOIN dbo.WorkerServices ws ON ws.WorkerId = w.WorkerId AND ws.ServiceName = v.ServiceName;
-END;
+/* Remove only the known fictional booking seed rows from earlier script versions. */
+UPDATE a
+SET SlotStatus = N'Available'
+FROM dbo.AvailabilitySlots a
+INNER JOIN dbo.ServiceRequests r ON r.SlotId = a.SlotId
+WHERE r.PublicReference IN (N'SR-1038', N'SR-1031', N'SR-1019');
+
+DELETE n
+FROM dbo.Notifications n
+INNER JOIN dbo.ServiceRequests r ON r.RequestId = n.RelatedRequestId
+WHERE r.PublicReference IN (N'SR-1038', N'SR-1031', N'SR-1019');
+DELETE h
+FROM dbo.BookingStatusHistory h
+INNER JOIN dbo.ServiceRequests r ON r.RequestId = h.RequestId
+WHERE r.PublicReference IN (N'SR-1038', N'SR-1031', N'SR-1019');
+DELETE rv
+FROM dbo.Reviews rv
+INNER JOIN dbo.ServiceRequests r ON r.RequestId = rv.RequestId
+WHERE r.PublicReference IN (N'SR-1038', N'SR-1031', N'SR-1019');
+DELETE FROM dbo.ServiceRequests
+WHERE PublicReference IN (N'SR-1038', N'SR-1031', N'SR-1019');
+
+/* Keep denormalized worker totals consistent with rows that actually exist. */
+UPDATE w
+SET ReviewCount = reviews.ReviewCount,
+    RatingAverage = reviews.RatingAverage,
+    JobsCompleted = jobs.JobsCompleted
+FROM dbo.Workers w
+CROSS APPLY (
+    SELECT COUNT(*) AS ReviewCount,
+           COALESCE(CAST(AVG(CAST(r.Rating AS DECIMAL(4,2))) AS DECIMAL(3,2)), 0) AS RatingAverage
+    FROM dbo.Reviews r
+    WHERE r.WorkerId = w.WorkerId AND r.IsVisible = 1
+) reviews
+CROSS APPLY (
+    SELECT COUNT(*) AS JobsCompleted
+    FROM dbo.ServiceRequests r
+    WHERE r.WorkerId = w.WorkerId AND r.Status = N'Completed'
+) jobs;
 GO
 
 /* =========================================================
@@ -663,9 +720,27 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE UserId = @AdminId AND Role = N'Admin' AND IsActive = 1)
         THROW 50002, 'An active admin account is required.', 1;
 
+    DECLARE @ApplicantUserId INT;
+    DECLARE @CategoryId INT;
+    DECLARE @SuburbId INT;
+    DECLARE @YearsExperience TINYINT;
+    DECLARE @StartingPrice DECIMAL(10,2);
+    DECLARE @Description NVARCHAR(1000);
+    DECLARE @MainService NVARCHAR(120);
+    DECLARE @Phone NVARCHAR(20);
+    DECLARE @WorkerId INT;
+
     BEGIN TRANSACTION;
-        UPDATE dbo.WorkerApplications
-        SET Status = @NewStatus, ReviewedAt = SYSUTCDATETIME()
+        SELECT
+            @ApplicantUserId = ApplicantUserId,
+            @CategoryId = CategoryId,
+            @SuburbId = SuburbId,
+            @YearsExperience = YearsExperience,
+            @StartingPrice = StartingPrice,
+            @Description = Description,
+            @MainService = MainService,
+            @Phone = Phone
+        FROM dbo.WorkerApplications WITH (UPDLOCK, ROWLOCK)
         WHERE ApplicationId = @ApplicationId;
 
         IF @@ROWCOUNT = 0
@@ -673,6 +748,44 @@ BEGIN
             ROLLBACK TRANSACTION;
             THROW 50003, 'Application was not found.', 1;
         END;
+
+        IF @NewStatus = N'Approved' AND @ApplicantUserId IS NOT NULL
+        BEGIN
+            IF EXISTS (SELECT 1 FROM dbo.Workers WHERE UserId = @ApplicantUserId)
+            BEGIN
+                ROLLBACK TRANSACTION;
+                THROW 50004, 'The applicant already has a worker profile.', 1;
+            END;
+
+            UPDATE dbo.Users
+            SET Role = N'Worker', Phone = @Phone, SuburbId = @SuburbId,
+                UpdatedAt = SYSUTCDATETIME()
+            WHERE UserId = @ApplicantUserId AND IsActive = 1;
+            IF @@ROWCOUNT = 0
+            BEGIN
+                ROLLBACK TRANSACTION;
+                THROW 50005, 'The applicant account is not active.', 1;
+            END;
+
+            INSERT dbo.Workers
+                (PublicId, UserId, CategoryId, SuburbId, YearsExperience, StartingPrice,
+                 About, IsIdentityVerified, ListingStatus)
+            VALUES
+                (CONCAT(N'worker-', @ApplicantUserId), @ApplicantUserId, @CategoryId,
+                 @SuburbId, @YearsExperience, @StartingPrice, @Description, 0, N'Live');
+            SET @WorkerId = SCOPE_IDENTITY();
+
+            INSERT dbo.WorkerServices (WorkerId, ServiceName, StartingPrice)
+            VALUES (@WorkerId, @MainService, @StartingPrice);
+
+            UPDATE dbo.WorkerApplications
+            SET CreatedWorkerId = @WorkerId
+            WHERE ApplicationId = @ApplicationId;
+        END;
+
+        UPDATE dbo.WorkerApplications
+        SET Status = @NewStatus, ReviewedAt = SYSUTCDATETIME()
+        WHERE ApplicationId = @ApplicationId;
 
         INSERT dbo.AdminActions (AdminId, ApplicationId, Action, Note)
         VALUES (@AdminId, @ApplicationId,
@@ -710,6 +823,20 @@ BEGIN
         BEGIN
             ROLLBACK TRANSACTION;
             THROW 50012, 'Service request was not found.', 1;
+        END;
+
+        IF @ChangedByUserId IS NULL OR NOT EXISTS (
+            SELECT 1
+            FROM dbo.ServiceRequests r
+            INNER JOIN dbo.Users u ON u.UserId = @ChangedByUserId AND u.IsActive = 1
+            INNER JOIN dbo.Workers w ON w.WorkerId = r.WorkerId
+            WHERE r.RequestId = @RequestId
+              AND ((@NewStatus = N'Cancelled' AND u.Role = N'Customer' AND r.CustomerId = u.UserId)
+                OR (@NewStatus <> N'Cancelled' AND u.Role = N'Worker' AND w.UserId = u.UserId))
+        )
+        BEGIN
+            ROLLBACK TRANSACTION;
+            THROW 50014, 'The signed-in account cannot update this request.', 1;
         END;
 
         IF NOT (
