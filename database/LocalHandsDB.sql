@@ -270,7 +270,7 @@ BEGIN
         ServiceEstimate DECIMAL(10,2) NOT NULL,
         TravelFee DECIMAL(10,2) NOT NULL CONSTRAINT DF_ServiceRequests_TravelFee DEFAULT (0),
         TotalPrice AS (ServiceEstimate + TravelFee) PERSISTED,
-        Status NVARCHAR(10) NOT NULL CONSTRAINT DF_ServiceRequests_Status DEFAULT (N'Pending'),
+        Status NVARCHAR(15) NOT NULL CONSTRAINT DF_ServiceRequests_Status DEFAULT (N'Pending'),
         ScheduledAt DATETIME2(0) NOT NULL,
         CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_ServiceRequests_CreatedAt DEFAULT (SYSUTCDATETIME()),
         UpdatedAt DATETIME2(0) NULL,
