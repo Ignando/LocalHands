@@ -184,6 +184,7 @@ export type ServiceRequest = {
   date: string;
   time: string;
   scheduledAt: string;
+  times: string[];
   location: string;
   total: number;
   notes?: string;

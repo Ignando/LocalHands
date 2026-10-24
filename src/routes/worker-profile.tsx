@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { getCurrentAccount } from "@/lib/server/auth";
 import type { Worker } from "@/lib/mock-data";
 import { useStore } from "@/lib/store";
+import { validateWeeklyAvailability } from "@/lib/availability";
 
 export const Route = createFileRoute("/worker-profile")({
   loader: async () => {
@@ -39,6 +40,7 @@ function WorkerProfileEdit() {
   const { account, locations, workers, updateWorker } = useStore();
   const worker = workers.find((w) => w.id === account?.workerPublicId);
   const [busy, setBusy] = useState(false);
+  const [scheduleError, setScheduleError] = useState("");
   const [form, setForm] = useState(() => ({
     name: worker?.name ?? "",
     location: worker?.location ?? locations[0] ?? "",
@@ -64,6 +66,12 @@ function WorkerProfileEdit() {
   const set = (k: keyof typeof form, v: string | number) => setForm((f) => ({ ...f, [k]: v }));
 
   const save = async () => {
+    const validationMessage = validateWeeklyAvailability(weeklyHours);
+    if (validationMessage) {
+      setScheduleError(validationMessage);
+      return;
+    }
+    setScheduleError("");
     setBusy(true);
     try {
       const schedule = Object.fromEntries(
@@ -117,8 +125,8 @@ function WorkerProfileEdit() {
               {weeklyHours.map((hours, index) => {
                 const dayLabel = WEEKDAYS[index]?.label ?? hours.day;
                 return (
-                  <div key={hours.day} className="grid grid-cols-[1fr_1fr_1fr] items-center gap-2 rounded-md border border-border p-2">
-                    <label className="flex items-center gap-2 text-xs text-foreground">
+                  <div key={hours.day} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-2 rounded-md border border-border p-2 sm:grid-cols-[1fr_1fr_1fr]">
+                    <label className="col-span-2 flex items-center gap-2 text-xs text-foreground sm:col-span-1">
                       <input
                         type="checkbox"
                         checked={hours.enabled}
@@ -132,6 +140,7 @@ function WorkerProfileEdit() {
                 );
               })}
             </div>
+            {scheduleError && <p role="alert" className="mt-3 text-xs text-destructive">{scheduleError}</p>}
           </section>
           <div className="sm:col-span-2 flex justify-end"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save changes"}</Button></div>
         </form>

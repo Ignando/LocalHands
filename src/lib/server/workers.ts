@@ -100,7 +100,7 @@ export const getWorkers = createServerFn().handler(async (): Promise<Worker[]> =
       SELECT wh.WorkerId, wh.DayOfWeek, wh.StartTime, wh.EndTime
       FROM dbo.WeeklyHours wh
       INNER JOIN dbo.Workers w ON w.WorkerId = wh.WorkerId
-      WHERE w.ListingStatus = 'Live'
+      WHERE w.ListingStatus = 'Live' AND wh.IsAvailable = 1
     `),
   ]);
 
@@ -158,7 +158,7 @@ export const getWorkerById = createServerFn()
         .request()
         .input("WorkerId", sql.Int, row.WorkerId)
         .query<HoursRow>(
-          `SELECT DayOfWeek, StartTime, EndTime FROM dbo.WeeklyHours WHERE WorkerId = @WorkerId`,
+          `SELECT DayOfWeek, StartTime, EndTime FROM dbo.WeeklyHours WHERE WorkerId = @WorkerId AND IsAvailable = 1`,
         ),
     ]);
 

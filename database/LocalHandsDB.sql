@@ -289,6 +289,26 @@ BEGIN
 END;
 GO
 
+IF OBJECT_ID(N'dbo.ServiceRequestSlots', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ServiceRequestSlots (
+        RequestId INT NOT NULL,
+        SlotId INT NOT NULL,
+        CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_ServiceRequestSlots_CreatedAt DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT PK_ServiceRequestSlots PRIMARY KEY (RequestId, SlotId),
+        CONSTRAINT FK_ServiceRequestSlots_Request FOREIGN KEY (RequestId) REFERENCES dbo.ServiceRequests(RequestId),
+        CONSTRAINT FK_ServiceRequestSlots_Slot FOREIGN KEY (SlotId) REFERENCES dbo.AvailabilitySlots(SlotId)
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = N'IX_ServiceRequestSlots_SlotId' AND object_id = OBJECT_ID(N'dbo.ServiceRequestSlots')
+)
+    CREATE INDEX IX_ServiceRequestSlots_SlotId ON dbo.ServiceRequestSlots(SlotId) INCLUDE (RequestId);
+GO
+
 /* A slot is unique only when one is actually assigned. Multiple historic/unassigned
    requests may have SlotId = NULL. Also migrate databases created by an earlier
    version of this script that used a regular UNIQUE constraint. */
@@ -878,7 +898,12 @@ BEGIN
                     (slot.StartsAt AT TIME ZONE 'UTC') AT TIME ZONE 'South Africa Standard Time' AS LocalStartsAt,
                     (slot.EndsAt AT TIME ZONE 'UTC') AT TIME ZONE 'South Africa Standard Time' AS LocalEndsAt
             ) localTime
-            WHERE slot.SlotId = @SlotId;
+            WHERE slot.SlotId = @SlotId
+               OR EXISTS (
+                    SELECT 1 FROM dbo.ServiceRequestSlots requestSlot
+                    WHERE requestSlot.RequestId = @RequestId
+                      AND requestSlot.SlotId = slot.SlotId
+               );
         END;
 
         IF @NewStatus = N'Completed'
@@ -949,4 +974,3 @@ SELECT * FROM dbo.vw_CategoryCoverage ORDER BY CategoryId;
 SELECT * FROM dbo.vw_WorkerSummary ORDER BY FullName;
 SELECT * FROM dbo.vw_ServiceRequestSummary ORDER BY ScheduledAt DESC;
 GO
-

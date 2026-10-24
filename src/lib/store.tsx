@@ -39,7 +39,7 @@ type Store = {
   setAccount: (account: AuthenticatedAccount | null) => void;
   signOut: () => Promise<void>;
   requests: ServiceRequest[];
-  addRequest: (request: { workerId: string; service: string; startsAt: string; notes?: string }) => Promise<ServiceRequest>;
+  addRequest: (request: { workerId: string; service: string; startsAt: string[]; notes?: string }) => Promise<ServiceRequest>;
   setRequestStatus: (id: string, status: Exclude<RequestStatus, "Pending" | "Rescheduling">) => Promise<void>;
   applications: Application[];
   setApplicationStatus: (id: string, status: Exclude<ApplicationStatus, "Application Submitted">) => Promise<void>;

@@ -12,6 +12,9 @@ import type {
 } from "@/lib/mock-data";
 
 import { getWorkerById } from "@/lib/server/workers";
+import { generatePublicReference } from "@/lib/server/public-reference";
+import { getLocalDateKey } from "@/lib/availability";
+import { calculateHourlyBookingPrice } from "@/lib/pricing";
 
 
 
@@ -45,6 +48,7 @@ type RequestRow = {
   TravelFee: string | number;
   TotalPrice: string | number;
   JobNotes: string | null;
+  SlotTimes: string | null;
 };
 
 function mapApplication(row: ApplicationRow): Application {
@@ -91,6 +95,19 @@ function mapRequest(row: RequestRow): ServiceRequest {
       timeZone: "Africa/Johannesburg",
     }),
     scheduledAt: scheduled.toISOString(),
+    times: row.SlotTimes
+      ? row.SlotTimes.split("|").map((startsAt) =>
+          new Date(`${startsAt}Z`).toLocaleTimeString("en-ZA", {
+            hour: "2-digit",
+            minute: "2-digit",
+            timeZone: "Africa/Johannesburg",
+          }),
+        )
+      : [scheduled.toLocaleTimeString("en-ZA", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: "Africa/Johannesburg",
+        })],
     location: row.WorkerSuburb,
     total: Number(row.TotalPrice),
     ...(row.JobNotes ? { notes: row.JobNotes } : {}),
@@ -111,12 +128,30 @@ const APPLICATION_QUERY = `
 const REQUEST_QUERY = `
   SELECT r.RequestId, w.PublicId, r.Status, r.ScheduledAt, customer.FullName AS CustomerName,
          ws.ServiceName, suburb.Name AS WorkerSuburb, r.ServiceEstimate, r.TravelFee,
-         r.TotalPrice, r.JobNotes
+         r.TotalPrice, r.JobNotes, booked.SlotTimes
   FROM dbo.ServiceRequests r
   INNER JOIN dbo.Users customer ON customer.UserId = r.CustomerId
   INNER JOIN dbo.Workers w ON w.WorkerId = r.WorkerId
   INNER JOIN dbo.WorkerServices ws ON ws.ServiceId = r.ServiceId
   INNER JOIN dbo.Suburbs suburb ON suburb.SuburbId = w.SuburbId
+  OUTER APPLY (
+    SELECT STRING_AGG(CONVERT(NVARCHAR(MAX), CONVERT(VARCHAR(19), slots.StartsAt, 126)), N'|')
+      WITHIN GROUP (ORDER BY slots.StartsAt) AS SlotTimes
+    FROM (
+      SELECT slot.StartsAt
+      FROM dbo.ServiceRequestSlots requestSlot
+      INNER JOIN dbo.AvailabilitySlots slot ON slot.SlotId = requestSlot.SlotId
+      WHERE requestSlot.RequestId = r.RequestId
+      UNION ALL
+      SELECT slot.StartsAt
+      FROM dbo.AvailabilitySlots slot
+      WHERE slot.SlotId = r.SlotId
+        AND NOT EXISTS (
+          SELECT 1 FROM dbo.ServiceRequestSlots requestSlot
+          WHERE requestSlot.RequestId = r.RequestId
+        )
+    ) slots
+  ) booked
 `;
 
 async function loadApplications(): Promise<Application[]> {
@@ -258,32 +293,152 @@ export const setApplicationStatus = createServerFn({ method: "POST" })
 
 export type AvailableSlot = { startsAt: string; endsAt: string };
 
+const GENERATE_AVAILABILITY_SQL = `
+  CREATE TABLE #GeneratedAvailability (
+    StartsAt DATETIME2(0) NOT NULL PRIMARY KEY,
+    EndsAt DATETIME2(0) NOT NULL
+  );
+
+  DECLARE @LocalToday DATE = CONVERT(
+    DATE,
+    SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'South Africa Standard Time'
+  );
+
+  ;WITH DayNumbers AS (
+    SELECT TOP (30)
+      CONVERT(INT, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1) AS DayOffset
+    FROM sys.all_objects
+  ),
+  WorkDates AS (
+    SELECT DATEADD(DAY, DayOffset, @LocalToday) AS WorkDate
+    FROM DayNumbers
+  ),
+  HourOffsets AS (
+    SELECT TOP (24)
+      CONVERT(INT, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1) AS HourOffset
+    FROM sys.all_objects
+  ),
+  LocalSlots AS (
+    SELECT DATEADD(
+      MINUTE,
+      DATEDIFF(MINUTE, CONVERT(TIME(0), '00:00'), wh.StartTime) + hours.HourOffset * 60,
+      CONVERT(DATETIME2(0), dates.WorkDate)
+    ) AS LocalStart
+    FROM WorkDates dates
+    INNER JOIN dbo.WeeklyHours wh
+      ON wh.WorkerId = @WorkerId
+     AND wh.IsAvailable = 1
+     AND wh.DayOfWeek = CONVERT(TINYINT, (DATEDIFF(DAY, CONVERT(DATE, '19000101'), dates.WorkDate) % 7) + 1)
+    CROSS JOIN HourOffsets hours
+    WHERE hours.HourOffset < DATEDIFF(MINUTE, wh.StartTime, wh.EndTime) / 60
+  ),
+  UtcSlots AS (
+    SELECT CONVERT(
+      DATETIME2(0),
+      (LocalStart AT TIME ZONE 'South Africa Standard Time') AT TIME ZONE 'UTC'
+    ) AS StartsAt
+    FROM LocalSlots
+  )
+  INSERT #GeneratedAvailability (StartsAt, EndsAt)
+  SELECT StartsAt, DATEADD(HOUR, 1, StartsAt)
+  FROM UtcSlots
+  WHERE StartsAt > SYSUTCDATETIME();
+
+  UPDATE slot
+  SET SlotStatus = CASE WHEN generated.StartsAt IS NULL THEN N'Blocked' ELSE N'Available' END,
+      EndsAt = COALESCE(generated.EndsAt, slot.EndsAt)
+  FROM dbo.AvailabilitySlots slot
+  LEFT JOIN #GeneratedAvailability generated ON generated.StartsAt = slot.StartsAt
+  WHERE slot.WorkerId = @WorkerId
+    AND slot.SlotStatus IN (N'Available', N'Blocked')
+    AND slot.StartsAt > SYSUTCDATETIME();
+
+  INSERT dbo.AvailabilitySlots (WorkerId, StartsAt, EndsAt, SlotStatus)
+  SELECT @WorkerId, generated.StartsAt, generated.EndsAt, N'Available'
+  FROM #GeneratedAvailability generated
+  WHERE NOT EXISTS (
+    SELECT 1 FROM dbo.AvailabilitySlots slot WITH (UPDLOCK, HOLDLOCK)
+    WHERE slot.WorkerId = @WorkerId AND slot.StartsAt = generated.StartsAt
+  );
+
+  UPDATE slot
+  SET SlotStatus = N'Booked'
+  FROM dbo.AvailabilitySlots slot
+  WHERE slot.WorkerId = @WorkerId
+    AND (
+      EXISTS (
+        SELECT 1 FROM dbo.ServiceRequests request
+        WHERE request.WorkerId = @WorkerId
+          AND request.Status NOT IN (N'Declined', N'Cancelled')
+          AND request.SlotId = slot.SlotId
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM dbo.ServiceRequestSlots requestSlot
+        INNER JOIN dbo.ServiceRequests request ON request.RequestId = requestSlot.RequestId
+        WHERE requestSlot.SlotId = slot.SlotId
+          AND request.WorkerId = @WorkerId
+          AND request.Status NOT IN (N'Declined', N'Cancelled')
+      )
+    );
+`;
+
 export const getAvailableSlots = createServerFn()
   .validator((workerPublicId: string) => workerPublicId)
   .handler(async ({ data: workerPublicId }): Promise<AvailableSlot[]> => {
     const pool = await getDbConnection();
-    const result = await pool
-      .request()
-      .input("PublicId", sql.NVarChar(40), workerPublicId)
-      .query<{ StartsAt: Date | string; EndsAt: Date | string }>(`
-        SELECT a.StartsAt, a.EndsAt
-        FROM dbo.AvailabilitySlots a
-        INNER JOIN dbo.Workers w ON w.WorkerId = a.WorkerId
-        WHERE w.PublicId = @PublicId AND w.ListingStatus = N'Live'
-          AND a.SlotStatus = N'Available' AND a.StartsAt > SYSUTCDATETIME()
-        ORDER BY a.StartsAt
-      `);
-    return result.recordset.map((slot) => ({
-      startsAt: new Date(slot.StartsAt).toISOString(),
-      endsAt: new Date(slot.EndsAt).toISOString(),
-    }));
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+    try {
+      const worker = await new sql.Request(transaction)
+        .input("PublicId", sql.NVarChar(40), workerPublicId)
+        .query<{ WorkerId: number }>(`
+          SELECT WorkerId FROM dbo.Workers WITH (UPDLOCK, HOLDLOCK)
+          WHERE PublicId = @PublicId AND ListingStatus = N'Live'
+        `);
+      const workerId = worker.recordset[0]?.WorkerId;
+      if (!workerId) {
+        await transaction.commit();
+        return [];
+      }
+
+      await new sql.Request(transaction)
+        .input("WorkerId", sql.Int, workerId)
+        .query(GENERATE_AVAILABILITY_SQL);
+      const result = await new sql.Request(transaction)
+        .input("WorkerId", sql.Int, workerId)
+        .query<{ StartsAt: Date | string; EndsAt: Date | string }>(`
+          SELECT StartsAt, EndsAt
+          FROM dbo.AvailabilitySlots
+          WHERE WorkerId = @WorkerId AND SlotStatus = N'Available'
+            AND StartsAt > SYSUTCDATETIME()
+          ORDER BY StartsAt
+        `);
+      await transaction.commit();
+      return result.recordset.map((slot) => ({
+        startsAt: new Date(slot.StartsAt).toISOString(),
+        endsAt: new Date(slot.EndsAt).toISOString(),
+      }));
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
   });
 
 const createRequestInput = z.object({
   workerPublicId: z.string().trim().min(1).max(40),
   service: z.string().trim().min(1).max(120),
-  startsAt: z.string().datetime(),
+  startsAt: z.array(z.string().datetime()).min(1).max(24),
   notes: z.string().trim().max(500),
+}).superRefine((data, context) => {
+  const uniqueStarts = new Set(data.startsAt.map((value) => new Date(value).getTime()));
+  if (uniqueStarts.size !== data.startsAt.length) {
+    context.addIssue({ code: "custom", path: ["startsAt"], message: "Each hourly slot can only be selected once" });
+  }
+  const dates = new Set(data.startsAt.map((value) => getLocalDateKey(value)));
+  if (dates.size !== 1) {
+    context.addIssue({ code: "custom", path: ["startsAt"], message: "Choose all hours on one calendar date" });
+  }
 });
 
 export const createServiceRequest = createServerFn({ method: "POST" })
@@ -296,53 +451,110 @@ export const createServiceRequest = createServerFn({ method: "POST" })
     await transaction.begin();
 
     try {
-      const slot = await new sql.Request(transaction)
-        .input("PublicId", sql.NVarChar(40), data.workerPublicId)
-        .input("Service", sql.NVarChar(120), data.service)
-        .input("StartsAt", sql.DateTime2, new Date(data.startsAt))
-        .query<{
-          SlotId: number;
-          WorkerId: number;
-          ServiceId: number;
-          StartingPrice: string | number;
-          TravelFee: string | number;
-        }>(`
-          SELECT a.SlotId, w.WorkerId, ws.ServiceId, ws.StartingPrice, w.TravelFee
-          FROM dbo.AvailabilitySlots a WITH (UPDLOCK, ROWLOCK)
-          INNER JOIN dbo.Workers w ON w.WorkerId = a.WorkerId
-          INNER JOIN dbo.WorkerServices ws ON ws.WorkerId = w.WorkerId
-          WHERE w.PublicId = @PublicId AND w.ListingStatus = N'Live'
-            AND ws.ServiceName = @Service AND ws.IsActive = 1
-            AND a.StartsAt = @StartsAt AND a.SlotStatus = N'Available'
-        `);
-      const selectedSlot = slot.recordset[0];
-      if (!selectedSlot) throw new Error("That time is no longer available");
+      const selectedSlots: {
+        startsAt: string;
+        slotId: number;
+        workerId: number;
+        serviceId: number;
+        startingPrice: number;
+        travelFee: number;
+      }[] = [];
+      for (const startsAt of [...data.startsAt].sort()) {
+        const selected = await new sql.Request(transaction)
+          .input("PublicId", sql.NVarChar(40), data.workerPublicId)
+          .input("Service", sql.NVarChar(120), data.service)
+          .input("StartsAt", sql.DateTime2, new Date(startsAt))
+          .query<{
+            SlotId: number;
+            WorkerId: number;
+            ServiceId: number;
+            StartingPrice: string | number;
+            TravelFee: string | number;
+          }>(`
+            SELECT a.SlotId, w.WorkerId, ws.ServiceId, ws.StartingPrice, w.TravelFee
+            FROM dbo.AvailabilitySlots a WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
+            INNER JOIN dbo.Workers w ON w.WorkerId = a.WorkerId
+            INNER JOIN dbo.WorkerServices ws ON ws.WorkerId = w.WorkerId
+            WHERE w.PublicId = @PublicId AND w.ListingStatus = N'Live'
+              AND ws.ServiceName = @Service AND ws.IsActive = 1
+              AND a.StartsAt = @StartsAt AND a.SlotStatus = N'Available'
+              AND a.StartsAt > SYSUTCDATETIME()
+              AND CONVERT(DATE, (a.StartsAt AT TIME ZONE 'UTC') AT TIME ZONE 'South Africa Standard Time') >=
+                CONVERT(DATE, SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'South Africa Standard Time')
+              AND CONVERT(DATE, (a.StartsAt AT TIME ZONE 'UTC') AT TIME ZONE 'South Africa Standard Time') <
+                DATEADD(DAY, 30, CONVERT(DATE, SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'South Africa Standard Time'))
+              AND NOT EXISTS (
+                SELECT 1 FROM dbo.ServiceRequests request
+                WHERE request.WorkerId = w.WorkerId
+                  AND request.Status NOT IN (N'Declined', N'Cancelled')
+                  AND (
+                    request.SlotId = a.SlotId
+                    OR EXISTS (
+                      SELECT 1 FROM dbo.ServiceRequestSlots requestSlot
+                      WHERE requestSlot.RequestId = request.RequestId
+                        AND requestSlot.SlotId = a.SlotId
+                    )
+                  )
+              )
+          `);
+        const slot = selected.recordset[0];
+        if (!slot) throw new Error("One or more selected hours are no longer available");
+        if (selectedSlots.length && selectedSlots[0]!.workerId !== slot.WorkerId) {
+          throw new Error("Selected hours must belong to the same worker");
+        }
+        if (selectedSlots.length && selectedSlots[0]!.serviceId !== slot.ServiceId) {
+          throw new Error("The selected service is no longer available");
+        }
+        selectedSlots.push({
+          startsAt,
+          slotId: slot.SlotId,
+          workerId: slot.WorkerId,
+          serviceId: slot.ServiceId,
+          startingPrice: Number(slot.StartingPrice),
+          travelFee: Number(slot.TravelFee),
+        });
+      }
+      const pricing = selectedSlots[0]!;
+
+      const starts = selectedSlots.map(({ startsAt }) => new Date(startsAt));
+      const localDates = starts.map((start) => getLocalDateKey(start));
+      if (new Set(localDates).size !== 1) throw new Error("Choose all hours on one calendar date");
 
       const result = await new sql.Request(transaction)
+        .input("PublicReference", sql.NVarChar(20), generatePublicReference())
         .input("CustomerId", sql.Int, customer.userId)
-        .input("WorkerId", sql.Int, selectedSlot.WorkerId)
-        .input("ServiceId", sql.Int, selectedSlot.ServiceId)
-        .input("SlotId", sql.Int, selectedSlot.SlotId)
+        .input("WorkerId", sql.Int, pricing.workerId)
+        .input("ServiceId", sql.Int, pricing.serviceId)
         .input("Notes", sql.NVarChar(500), data.notes || null)
-        .input("Estimate", sql.Decimal(10, 2), Number(selectedSlot.StartingPrice))
-        .input("TravelFee", sql.Decimal(10, 2), Number(selectedSlot.TravelFee))
-        .input("StartsAt", sql.DateTime2, new Date(data.startsAt))
+        .input("Estimate", sql.Decimal(10, 2), calculateHourlyBookingPrice(
+          pricing.startingPrice,
+          selectedSlots.length,
+          pricing.travelFee,
+        ).serviceSubtotal)
+        .input("TravelFee", sql.Decimal(10, 2), pricing.travelFee)
+        .input("StartsAt", sql.DateTime2, starts[0])
         .query<{ RequestId: number }>(`
           INSERT dbo.ServiceRequests
-            (CustomerId, WorkerId, ServiceId, SlotId, JobNotes, ServiceEstimate,
+            (PublicReference, CustomerId, WorkerId, ServiceId, SlotId, JobNotes, ServiceEstimate,
              TravelFee, ScheduledAt)
           OUTPUT INSERTED.RequestId
           VALUES
-            (@CustomerId, @WorkerId, @ServiceId, @SlotId, @Notes, @Estimate,
+            (@PublicReference, @CustomerId, @WorkerId, @ServiceId, NULL, @Notes, @Estimate,
              @TravelFee, @StartsAt)
         `);
-      await new sql.Request(transaction)
-        .input("SlotId", sql.Int, selectedSlot.SlotId)
-        .query(`UPDATE dbo.AvailabilitySlots SET SlotStatus = N'Booked' WHERE SlotId = @SlotId`);
+      const requestId = result.recordset[0]?.RequestId;
+      if (!requestId) throw new Error("The booking could not be saved");
+      for (const slot of selectedSlots) {
+        await new sql.Request(transaction)
+          .input("RequestId", sql.Int, requestId)
+          .input("SlotId", sql.Int, slot.slotId)
+          .query(`
+            INSERT dbo.ServiceRequestSlots (RequestId, SlotId) VALUES (@RequestId, @SlotId);
+            UPDATE dbo.AvailabilitySlots SET SlotStatus = N'Booked' WHERE SlotId = @SlotId;
+          `);
+      }
       await transaction.commit();
 
-      const requestId = result.recordset[0]?.RequestId;
-      if (!requestId) throw new Error("The booking was saved but could not be reloaded");
       return loadRequestById(requestId);
     } catch (error) {
       await transaction.rollback();
@@ -415,8 +627,8 @@ const updateWorkerInput = z.object({
     .array(
       z.object({
         dayOfWeek: z.number().int().min(1).max(7),
-        startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-        endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+        startTime: z.string().min(1, "Enter a start time").regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Enter a valid start time"),
+        endTime: z.string().min(1, "Enter an end time").regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Enter a valid end time"),
       }),
     )
     .max(7)
@@ -429,7 +641,9 @@ const updateWorkerInput = z.object({
         seenDays.add(day.dayOfWeek);
         const startMinutes = Number(day.startTime.slice(0, 2)) * 60 + Number(day.startTime.slice(3, 5));
         const endMinutes = Number(day.endTime.slice(0, 2)) * 60 + Number(day.endTime.slice(3, 5));
-        if (endMinutes - startMinutes < 60) {
+        if (endMinutes <= startMinutes) {
+          context.addIssue({ code: "custom", path: [index, "endTime"], message: "End time must be later than start time" });
+        } else if (endMinutes - startMinutes < 60) {
           context.addIssue({ code: "custom", path: [index, "endTime"], message: "Availability must include at least one full hour" });
         }
       });
@@ -533,74 +747,7 @@ export const updateWorkerProfile = createServerFn({ method: "POST" })
 
       await new sql.Request(transaction)
         .input("WorkerId", sql.Int, workerId)
-        .query(`
-          CREATE TABLE #GeneratedAvailability (
-            StartsAt DATETIME2(0) NOT NULL PRIMARY KEY,
-            EndsAt DATETIME2(0) NOT NULL
-          );
-
-          DECLARE @LocalToday DATE = CONVERT(
-            DATE,
-            SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'South Africa Standard Time'
-          );
-
-          ;WITH DayNumbers AS (
-            SELECT TOP (30)
-              CONVERT(INT, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1) AS DayOffset
-            FROM sys.all_objects
-          ),
-          WorkDates AS (
-            SELECT DATEADD(DAY, DayOffset, @LocalToday) AS WorkDate
-            FROM DayNumbers
-          ),
-          HourOffsets AS (
-            SELECT TOP (24)
-              CONVERT(INT, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1) AS HourOffset
-            FROM sys.all_objects
-          ),
-          LocalSlots AS (
-            SELECT DATEADD(
-              MINUTE,
-              DATEDIFF(MINUTE, CONVERT(TIME(0), '00:00'), wh.StartTime) + hours.HourOffset * 60,
-              CONVERT(DATETIME2(0), dates.WorkDate)
-            ) AS LocalStart
-            FROM WorkDates dates
-            INNER JOIN dbo.WeeklyHours wh
-              ON wh.WorkerId = @WorkerId
-             AND wh.IsAvailable = 1
-             AND wh.DayOfWeek = CONVERT(TINYINT, (DATEDIFF(DAY, CONVERT(DATE, '19000101'), dates.WorkDate) % 7) + 1)
-            CROSS JOIN HourOffsets hours
-            WHERE hours.HourOffset < DATEDIFF(MINUTE, wh.StartTime, wh.EndTime) / 60
-          ),
-          UtcSlots AS (
-            SELECT CONVERT(
-              DATETIME2(0),
-              (LocalStart AT TIME ZONE 'South Africa Standard Time') AT TIME ZONE 'UTC'
-            ) AS StartsAt
-            FROM LocalSlots
-          )
-          INSERT #GeneratedAvailability (StartsAt, EndsAt)
-          SELECT StartsAt, DATEADD(HOUR, 1, StartsAt)
-          FROM UtcSlots
-          WHERE StartsAt > SYSUTCDATETIME();
-
-          UPDATE a
-          SET SlotStatus = CASE WHEN generated.StartsAt IS NULL THEN N'Blocked' ELSE N'Available' END,
-              EndsAt = COALESCE(generated.EndsAt, a.EndsAt)
-          FROM dbo.AvailabilitySlots a
-          LEFT JOIN #GeneratedAvailability generated ON generated.StartsAt = a.StartsAt
-          WHERE a.WorkerId = @WorkerId
-            AND a.SlotStatus IN (N'Available', N'Blocked')
-            AND a.StartsAt > SYSUTCDATETIME();
-
-          INSERT dbo.AvailabilitySlots (WorkerId, StartsAt, EndsAt, SlotStatus)
-          SELECT @WorkerId, generated.StartsAt, generated.EndsAt, N'Available'
-          FROM #GeneratedAvailability generated
-          WHERE NOT EXISTS (
-            SELECT 1 FROM dbo.AvailabilitySlots a
-            WHERE a.WorkerId = @WorkerId AND a.StartsAt = generated.StartsAt
-          );
-        `);
+        .query(GENERATE_AVAILABILITY_SQL);
       await transaction.commit();
     } catch (error) {
       await transaction.rollback();

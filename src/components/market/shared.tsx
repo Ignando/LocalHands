@@ -153,7 +153,9 @@ export function SignOut() {
 }
 
 export function Navbar() {
-  const { role } = useStore();
+  const { account, role } = useStore();
+  const displayName = account?.name.trim() || account?.email || "Signed in";
+  const roleLabel = role === "admin" ? "Admin" : role === "worker" ? "Worker" : role === "customer" ? "Customer" : "";
   return (
     <header className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur-sm">
       <div className="mx-auto flex max-w-[1200px] flex-wrap items-center justify-between gap-4 px-5 py-4 sm:px-8">
@@ -176,7 +178,7 @@ export function Navbar() {
           {role === "worker" && <nav className="hidden gap-5 text-sm text-muted-foreground md:flex"><Link to="/worker-dashboard" className="flex items-center gap-1.5 hover:text-foreground" activeProps={{ className: "text-foreground" }}><House className="size-3.5" />Worker workspace</Link><Link to="/worker-profile" className="flex items-center gap-1.5 hover:text-foreground" activeProps={{ className: "text-foreground" }}><UserRound className="size-3.5" />Profile</Link></nav>}
           {role === "admin" && <nav className="hidden text-sm text-muted-foreground md:flex"><Link to="/admin" className="flex items-center gap-1.5 hover:text-foreground" activeProps={{ className: "text-foreground" }}><ShieldCheck className="size-3.5" />Review queue</Link></nav>}
         </div>
-        {role ? <SignOut /> : <Button asChild size="sm"><Link to="/signin">Sign in</Link></Button>}
+        {role ? <div className="ml-auto flex min-w-0 items-center gap-2 sm:gap-3"><div className="min-w-0 text-right"><div className="max-w-[110px] truncate text-xs font-medium text-foreground sm:max-w-[220px]">{displayName}</div><div className="font-mono text-[9px] uppercase tracking-wide text-primary">{roleLabel}</div></div><SignOut /></div> : <div className="ml-auto flex items-center gap-3"><span className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Guest</span><Button asChild size="sm"><Link to="/signin">Sign in</Link></Button></div>}
       </div>
     </header>
   );

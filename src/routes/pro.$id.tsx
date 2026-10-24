@@ -9,7 +9,8 @@ import { getCategory, rand } from "@/lib/mock-data";
 import { getReviewsForWorker, getWorkerById } from "@/lib/server/workers";
 import { getAvailableSlots } from "@/lib/server/workflows";
 import { useStore } from "@/lib/store";
-import { cn } from "@/lib/utils";
+import { formatBookingDate, formatBookingTime, groupSlotsByLocalDate } from "@/lib/availability";
+import { calculateHourlyBookingPrice } from "@/lib/pricing";
 
 export const Route = createFileRoute("/pro/$id")({
   loader: async ({ params }) => {
@@ -34,20 +35,19 @@ function WorkerProfile() {
   const { account, addRequest, markViewed, workers } = useStore();
   const worker = workers.find((w) => w.id === seed.id) ?? seed;
   const category = getCategory(worker.category);
-  const slots = availableSlots.map(({ startsAt }) => {
-    const starts = new Date(startsAt);
-    return {
-      key: startsAt,
-      startsAt,
-      label: starts.toLocaleDateString("en-ZA", { weekday: "short" }),
-      date: starts.toLocaleDateString("en-ZA", { day: "numeric", month: "short" }),
-      time: starts.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }),
-    };
-  });
+  const slotsByDate = groupSlotsByLocalDate(availableSlots);
+  const dateKeys = [...slotsByDate.keys()];
 
   const [service, setService] = useState(worker.services[0] ?? "");
-  const [selected, setSelected] = useState<{ startsAt: string; date: string; label: string; time: string }>();
+  const [selectedDate, setSelectedDate] = useState("");
+  const [selectedStartsAt, setSelectedStartsAt] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
+  const activeDate = dateKeys.includes(selectedDate) ? selectedDate : dateKeys[0] ?? "";
+  const dateSlots = slotsByDate.get(activeDate) ?? [];
+  const selectedHours = dateSlots.filter((slot) => selectedStartsAt.includes(slot.startsAt));
+  const selectedTimes = selectedHours.map(({ startsAt }) => formatBookingTime(startsAt));
+  const estimate = calculateHourlyBookingPrice(worker.startPrice, selectedHours.length, worker.travelFee);
+  const { serviceSubtotal, total: estimatedTotal } = estimate;
 
   const lastMarkedWorker = useRef<string | null>(null);
   useEffect(() => {
@@ -56,20 +56,24 @@ function WorkerProfile() {
     markViewed(worker.id);
   }, [markViewed, worker.id]);
 
-  const total = worker.startPrice + worker.travelFee;
   const submit = async () => {
     if (!account || account.role !== "customer") {
       toast.error("Sign in with a customer account to book a worker");
       return;
     }
-    if (!selected) {
-      toast.error("Choose an available time first");
+    if (!selectedHours.length) {
+      toast.error("Choose at least one available hour");
       return;
     }
     try {
-      await addRequest({ workerId: worker.id, service, startsAt: selected.startsAt, notes });
+      await addRequest({
+        workerId: worker.id,
+        service,
+        startsAt: selectedHours.map(({ startsAt }) => startsAt),
+        notes,
+      });
       toast.success("Booking request sent", { description: `${worker.name} can now review it.` });
-      setSelected(undefined);
+      setSelectedStartsAt([]);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not send the booking request");
     }
@@ -111,13 +115,35 @@ function WorkerProfile() {
         </div>
 
         <aside className="panel h-fit p-5 lg:sticky lg:top-24">
-          <div className="flex items-end justify-between"><div><div className="eyebrow">Request a booking</div><div className="mt-2 text-2xl font-semibold">{rand(total)}</div></div><span className="text-xs text-muted-foreground">estimated total</span></div>
+          <div className="flex items-end justify-between"><div><div className="eyebrow">Request a booking</div><div className="mt-2 text-2xl font-semibold">{rand(estimatedTotal)}</div></div><span className="text-xs text-muted-foreground">estimated total</span></div>
           <label className="mt-5 block"><span className="mb-2 block font-mono text-[10px] uppercase text-muted-foreground">Service</span><select className="w-full rounded-md border border-input bg-surface px-3 py-2 text-sm outline-none" value={service} onChange={(event) => setService(event.target.value)}>{worker.services.map((item) => <option key={item}>{item}</option>)}</select></label>
-          <div className="mt-5"><div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase text-muted-foreground"><CalendarDays className="size-3.5" />Available times</div>{slots.length ? <div className="grid grid-cols-2 gap-2">{slots.slice(0, 6).map((slot) => <Button key={slot.key} type="button" size="sm" variant={selected?.startsAt === slot.startsAt ? "default" : "outline"} className={cn("h-auto flex-col py-2", selected?.startsAt === slot.startsAt && "border-primary")} onClick={() => setSelected({ startsAt: slot.startsAt, date: slot.date, label: slot.label, time: slot.time })}><span>{slot.label} · {slot.date}</span><span className="font-mono text-[10px] opacity-75">{slot.time}</span></Button>)}</div> : <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">No bookable times are currently available.</p>}</div>
+          <section className="mt-5" aria-label="Choose a booking date">
+            <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase text-muted-foreground"><CalendarDays className="size-3.5" />Available dates · next 30 days</div>
+            {dateKeys.length ? <div className="flex gap-2 overflow-x-auto pb-2">{dateKeys.map((dateKey) => {
+              const dateSlot = slotsByDate.get(dateKey)?.[0];
+              if (!dateSlot) return null;
+              const active = dateKey === activeDate;
+              return <Button key={dateKey} type="button" size="sm" variant={active ? "default" : "outline"} aria-pressed={active} className="shrink-0" onClick={() => { setSelectedDate(dateKey); setSelectedStartsAt([]); }}>{formatBookingDate(dateSlot.startsAt)}</Button>;
+            })}</div> : <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">No bookable dates are currently available.</p>}
+          </section>
+          {activeDate && <section className="mt-4" aria-label="Choose available hours">
+            <div className="mb-2 flex items-center justify-between"><span className="font-mono text-[10px] uppercase text-muted-foreground">Available hours</span><span className="text-[10px] text-muted-foreground">Select one or more</span></div>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">{dateSlots.map((slot) => {
+              const selected = selectedStartsAt.includes(slot.startsAt);
+              return <Button key={slot.startsAt} type="button" size="sm" variant={selected ? "default" : "outline"} aria-pressed={selected} className="font-mono" onClick={() => setSelectedStartsAt((previous) => selected ? previous.filter((value) => value !== slot.startsAt) : [...previous, slot.startsAt])}>{formatBookingTime(slot.startsAt)}</Button>;
+            })}</div>
+            <p className="mt-2 text-[10px] text-muted-foreground">Only currently bookable hours are listed; unavailable or booked hours cannot be selected.</p>
+          </section>}
           <label className="mt-5 block"><span className="mb-2 block font-mono text-[10px] uppercase text-muted-foreground">Job notes</span><Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Briefly describe what you need" /></label>
-          <div className="mt-5 space-y-2 border-t border-border pt-4 text-xs text-muted-foreground"><div className="flex justify-between"><span>Service estimate</span><span>{rand(worker.startPrice)}</span></div><div className="flex justify-between"><span>Travel fee</span><span>{worker.travelFee ? rand(worker.travelFee) : "Included"}</span></div></div>
-          {account?.role === "customer" ? <Button className="mt-5 w-full" onClick={submit}>Send request</Button> : <Button asChild className="mt-5 w-full"><Link to="/signin">Sign in to book</Link></Button>}
-          <p className="mt-3 text-center text-[11px] text-muted-foreground">No payment required for this prototype.</p>
+          <div className="mt-5 space-y-2 border-t border-border pt-4 text-xs text-muted-foreground">
+            <div className="flex justify-between gap-3"><span>Date</span><span className="text-right">{activeDate && dateSlots[0] ? formatBookingDate(dateSlots[0].startsAt) : "Choose a date"}</span></div>
+            <div className="flex justify-between gap-3"><span>Selected hours ({selectedHours.length})</span><span className="text-right">{selectedTimes.length ? selectedTimes.join(", ") : "None"}</span></div>
+            <div className="flex justify-between"><span>Service ({selectedHours.length} {selectedHours.length === 1 ? "hour" : "hours"})</span><span>{rand(serviceSubtotal)}</span></div>
+            <div className="flex justify-between"><span>Callout fee (once)</span><span>{worker.travelFee ? rand(worker.travelFee) : "Included"}</span></div>
+            <div className="flex justify-between border-t border-border pt-2 font-semibold text-foreground"><span>Estimated total</span><span>{rand(estimatedTotal)}</span></div>
+          </div>
+          {account?.role === "customer" ? <Button className="mt-5 w-full" onClick={submit} disabled={!selectedHours.length}>Send request</Button> : <Button asChild className="mt-5 w-full"><Link to="/signin">Sign in to book</Link></Button>}
+          <p className="mt-3 text-center text-[11px] text-muted-foreground">One request covers all selected hours on this date. No payment required.</p>
         </aside>
       </div>
     </div>
