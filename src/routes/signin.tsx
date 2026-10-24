@@ -1,4 +1,4 @@
-import { createFileRoute, redirect, useNavigate, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate, useRouter } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -109,6 +109,9 @@ function SignIn() {
           {registering ? "Sign in" : "Create a customer account"}
         </button>
       </p>
+      <Button asChild variant="outline" className="mt-4 w-full">
+        <Link to="/">Continue as guest</Link>
+      </Button>
     </div>
   );
 }
