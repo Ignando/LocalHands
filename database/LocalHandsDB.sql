@@ -974,3 +974,4 @@ SELECT * FROM dbo.vw_CategoryCoverage ORDER BY CategoryId;
 SELECT * FROM dbo.vw_WorkerSummary ORDER BY FullName;
 SELECT * FROM dbo.vw_ServiceRequestSummary ORDER BY ScheduledAt DESC;
 GO
+
