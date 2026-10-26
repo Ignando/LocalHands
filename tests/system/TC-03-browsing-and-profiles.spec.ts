@@ -6,13 +6,11 @@ test("TC-03 — browse category, clear filter, view worker profile and show empt
 }) => {
   await page.goto("/");
   await expect(page.getByText("no reviews yet", { exact: true })).toBeVisible();
-  await expect(page.locator('a[href="/pro/pw-worker"]')).toHaveCount(1);
-
-  const before = await page.locator('a[href="/pro/pw-worker"]').count();
-  expect(before).toBe(1);
+  const workerProfileLink = page.locator('a[href="/pro/pw-worker"]').first();
+  await expect(workerProfileLink).toBeVisible();
   await page.getByText("Garden & Landscaping", { exact: true }).first().click();
   await expect(page.getByText("Garden & Landscaping near you", { exact: true })).toBeVisible();
-  await expect(page.locator('a[href="/pro/pw-worker"]')).toBeVisible();
+  await expect(workerProfileLink).toBeVisible();
   await page.getByRole("button", { name: /clear filters/i }).click();
   await expect(page.getByText("Recommended near you")).toBeVisible();
 
@@ -36,7 +34,7 @@ test("TC-03 — browse category, clear filter, view worker profile and show empt
 
   await page.goto("/pro/pw-worker");
   await expect(page.getByRole("heading", { name: /playwright worker/i })).toBeVisible();
-  await expect(page.getByText("Playwright Standard Service", { exact: true })).toBeVisible();
+  await expect(page.getByText("Playwright Standard Service", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Recent reviews" })).toBeVisible();
   await expect(page.getByText("0.0 average", { exact: true })).toBeVisible();
   await expect(

@@ -33,7 +33,7 @@ test("TC-10 — treat SQL-like notes and application text as literal, safely ren
 
   await signInFixture(page, "worker");
   await page.goto("/worker-dashboard");
-  await expect(page.getByText(notes, { exact: true })).toBeVisible();
+  await expect(page.getByRole("article").filter({ hasText: notes })).toBeVisible();
   await expect(page.locator("script")).not.toContainText("window.__lh_pw_test");
   expect(await page.evaluate(() => Object.hasOwn(window, "__lh_pw_test"))).toBe(false);
   await signOut(page);

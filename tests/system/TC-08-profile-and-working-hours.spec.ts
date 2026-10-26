@@ -5,8 +5,10 @@ import { withTestDatabase } from "../support/test-database";
 test("TC-08 — save worker profile fields and weekly hours, reload and inspect public profile", async ({
   page,
 }) => {
+
   await signInFixture(page, "worker");
   await page.goto("/worker-profile");
+  await page.waitForLoadState("networkidle");
   const uniqueName = "Playwright Profile Updated";
   await page.getByLabel("Full name").fill(uniqueName);
   const firstStartTime = page.getByLabel(/start time$/i).first();
@@ -36,5 +38,5 @@ test("TC-08 — save worker profile fields and weekly hours, reload and inspect 
   });
 
   await page.goto("/pro/pw-worker");
-  await expect(page.getByText(uniqueName, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: uniqueName })).toBeVisible();
 });

@@ -121,6 +121,7 @@ export type Worker = {
   name: string;
   category: string;
   services: string[];
+  servicePrices?: Record<string, number>;
   location: string;
   years: number;
   startPrice: number;

@@ -46,7 +46,8 @@ function WorkerProfile() {
   const dateSlots = slotsByDate.get(activeDate) ?? [];
   const selectedHours = dateSlots.filter((slot) => selectedStartsAt.includes(slot.startsAt));
   const selectedTimes = selectedHours.map(({ startsAt }) => formatBookingTime(startsAt));
-  const estimate = calculateHourlyBookingPrice(worker.startPrice, selectedHours.length, worker.travelFee);
+  const hourlyRate = worker.servicePrices?.[service] ?? worker.startPrice;
+  const estimate = calculateHourlyBookingPrice(hourlyRate, selectedHours.length, worker.travelFee);
   const { serviceSubtotal, total: estimatedTotal } = estimate;
 
   const lastMarkedWorker = useRef<string | null>(null);
@@ -105,7 +106,7 @@ function WorkerProfile() {
 
           <section className="border-b border-border py-7">
             <SectionHead title="Services" tag={`from ${rand(worker.startPrice)}`} />
-            <div className="grid gap-2 sm:grid-cols-2">{worker.services.map((item) => <div key={item} className="panel flex items-center justify-between p-3 text-sm"><span>{item}</span><span className="font-mono text-xs text-primary">from {rand(worker.startPrice)}</span></div>)}</div>
+            <div className="grid gap-2 sm:grid-cols-2">{worker.services.map((item) => <div key={item} className="panel flex items-center justify-between p-3 text-sm"><span>{item}</span><span className="font-mono text-xs text-primary">from {rand(worker.servicePrices?.[item] ?? worker.startPrice)}</span></div>)}</div>
           </section>
 
           <section className="py-7">

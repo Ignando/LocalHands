@@ -4,6 +4,7 @@ import { getTestPasswords, TEST_ACCOUNTS } from "./test-data";
 
 export async function signIn(page: Page, email: string, password: string): Promise<void> {
   await page.goto("/signin");
+  await page.waitForLoadState("networkidle");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();

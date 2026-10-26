@@ -15,9 +15,8 @@ const DOW_TO_DAY: Record<number, Day> = {
   7: "Sun",
 };
 
-// TIME(0) columns arrive from mssql as "HH:mm:ss" strings — trim to "HH:mm".
-function trimTime(t: unknown): string {
-  return String(t).slice(0, 5);
+function trimTime(time: string): string {
+  return time.slice(0, 5);
 }
 
 type WorkerRow = {
@@ -41,8 +40,8 @@ type WorkerRow = {
   JobsCompleted: number;
 };
 
-type ServiceRow = { WorkerId: number; ServiceName: string };
-type HoursRow = { WorkerId: number; DayOfWeek: number; StartTime: unknown; EndTime: unknown };
+type ServiceRow = { WorkerId: number; ServiceName: string; StartingPrice: string | number };
+type HoursRow = { WorkerId: number; DayOfWeek: number; StartTime: string; EndTime: string };
 
 function buildBadges(row: WorkerRow): string[] {
   const badges: string[] = [];
@@ -56,6 +55,7 @@ function buildBadges(row: WorkerRow): string[] {
 function mapRow(
   row: WorkerRow,
   services: string[],
+  servicePrices: Record<string, number>,
   schedule: Partial<Record<Day, [string, string]>>,
 ): Worker {
   return {
@@ -63,6 +63,7 @@ function mapRow(
     name: row.FullName,
     category: row.CategorySlug,
     services,
+    servicePrices,
     location: row.Suburb,
     years: row.YearsExperience,
     startPrice: Number(row.StartingPrice),
@@ -90,14 +91,16 @@ export const getWorkers = createServerFn().handler(async (): Promise<Worker[]> =
       `SELECT * FROM dbo.vw_WorkerSummary WHERE ListingStatus = 'Live' ORDER BY JobsCompleted DESC`,
     ),
     pool.request().query<ServiceRow>(`
-      SELECT ws.WorkerId, ws.ServiceName
+      SELECT ws.WorkerId, ws.ServiceName, ws.StartingPrice
       FROM dbo.WorkerServices ws
       INNER JOIN dbo.Workers w ON w.WorkerId = ws.WorkerId
       WHERE w.ListingStatus = 'Live' AND ws.IsActive = 1
       ORDER BY ws.ServiceId
     `),
     pool.request().query<HoursRow>(`
-      SELECT wh.WorkerId, wh.DayOfWeek, wh.StartTime, wh.EndTime
+      SELECT wh.WorkerId, wh.DayOfWeek,
+        CONVERT(VARCHAR(5), wh.StartTime, 108) AS StartTime,
+        CONVERT(VARCHAR(5), wh.EndTime, 108) AS EndTime
       FROM dbo.WeeklyHours wh
       INNER JOIN dbo.Workers w ON w.WorkerId = wh.WorkerId
       WHERE w.ListingStatus = 'Live' AND wh.IsAvailable = 1
@@ -105,11 +108,11 @@ export const getWorkers = createServerFn().handler(async (): Promise<Worker[]> =
   ]);
 
   // Group services and hours by WorkerId
-  const serviceMap = new Map<number, string[]>();
-  for (const s of servicesRes.recordset) {
-    const arr = serviceMap.get(s.WorkerId) ?? [];
-    arr.push(s.ServiceName);
-    serviceMap.set(s.WorkerId, arr);
+  const serviceMap = new Map<number, ServiceRow[]>();
+  for (const service of servicesRes.recordset) {
+    const rows = serviceMap.get(service.WorkerId) ?? [];
+    rows.push(service);
+    serviceMap.set(service.WorkerId, rows);
   }
 
   const scheduleMap = new Map<number, Partial<Record<Day, [string, string]>>>();
@@ -124,7 +127,13 @@ export const getWorkers = createServerFn().handler(async (): Promise<Worker[]> =
   return workersRes.recordset.map((row) =>
     mapRow(
       row,
-      serviceMap.get(row.WorkerId) ?? [],
+      (serviceMap.get(row.WorkerId) ?? []).map((service) => service.ServiceName),
+      Object.fromEntries(
+        (serviceMap.get(row.WorkerId) ?? []).map((service) => [
+          service.ServiceName,
+          Number(service.StartingPrice),
+        ]),
+      ),
       scheduleMap.get(row.WorkerId) ?? {},
     ),
   );
@@ -151,14 +160,16 @@ export const getWorkerById = createServerFn()
       pool
         .request()
         .input("WorkerId", sql.Int, row.WorkerId)
-        .query<{ ServiceName: string }>(
-          `SELECT ServiceName FROM dbo.WorkerServices WHERE WorkerId = @WorkerId AND IsActive = 1 ORDER BY ServiceId`,
+        .query<ServiceRow>(
+          `SELECT WorkerId, ServiceName, StartingPrice FROM dbo.WorkerServices WHERE WorkerId = @WorkerId AND IsActive = 1 ORDER BY ServiceId`,
         ),
       pool
         .request()
         .input("WorkerId", sql.Int, row.WorkerId)
         .query<HoursRow>(
-          `SELECT DayOfWeek, StartTime, EndTime FROM dbo.WeeklyHours WHERE WorkerId = @WorkerId AND IsAvailable = 1`,
+          `SELECT DayOfWeek, CONVERT(VARCHAR(5), StartTime, 108) AS StartTime,
+            CONVERT(VARCHAR(5), EndTime, 108) AS EndTime
+          FROM dbo.WeeklyHours WHERE WorkerId = @WorkerId AND IsAvailable = 1`,
         ),
     ]);
 
@@ -168,7 +179,14 @@ export const getWorkerById = createServerFn()
       if (day) schedule[day] = [trimTime(h.StartTime), trimTime(h.EndTime)];
     }
 
-    return mapRow(row, servicesRes.recordset.map((s) => s.ServiceName), schedule);
+    return mapRow(
+      row,
+      servicesRes.recordset.map((service) => service.ServiceName),
+      Object.fromEntries(
+        servicesRes.recordset.map((service) => [service.ServiceName, Number(service.StartingPrice)]),
+      ),
+      schedule,
+    );
   });
 
 type ReviewRow = {

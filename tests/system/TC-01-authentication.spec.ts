@@ -9,6 +9,7 @@ test("TC-01 — customer registration, role-based sign-in, bad password and sign
   const email = `pw.registered.${randomUUID()}@localhands.test`;
   const newCustomerPassword = passwordFor("customer");
   await page.goto("/signin");
+  await page.waitForLoadState("networkidle");
   await page.getByRole("button", { name: "Create a customer account" }).click();
   await page.getByLabel("Full name").fill("Playwright Registered Customer");
   await page.getByLabel("Email").fill(email);
@@ -18,6 +19,7 @@ test("TC-01 — customer registration, role-based sign-in, bad password and sign
   await signOut(page);
 
   await page.goto("/signin");
+  await page.waitForLoadState("networkidle");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("Definitely-Wrong-Password");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();

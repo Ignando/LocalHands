@@ -12,7 +12,7 @@ test("TC-04 — book one hour, reserve its slot and persist the service rate plu
   await selectAvailableHours(page, 1);
   const visibleEstimateText = await page
     .locator("aside")
-    .getByText("Estimated total")
+    .getByText("Estimated total", { exact: true })
     .locator("xpath=..")
     .innerText();
   const visibleEstimate = parseRandAmount(visibleEstimateText);

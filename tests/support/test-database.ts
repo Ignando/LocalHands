@@ -78,14 +78,16 @@ const RESET_TEST_FIXTURES_SQL = `
   DECLARE @ApplicantId INT = (SELECT UserId FROM dbo.Users WHERE Email = N'pw.applicant@localhands.test');
   DECLARE @AdminId INT = (SELECT UserId FROM dbo.Users WHERE Email = N'pw.admin@localhands.test');
   DECLARE @WorkerId INT = (SELECT WorkerId FROM dbo.Workers WHERE PublicId = N'pw-worker');
-  DECLARE @ApplicantWorkerId INT = (SELECT WorkerId FROM dbo.Workers WHERE UserId = @ApplicantId);
 
   IF @CustomerId IS NULL OR @ApplicantId IS NULL OR @AdminId IS NULL OR @WorkerId IS NULL
       THROW 51001, 'Playwright fixtures are missing; execute database/tests/setup-test-database.sql in SSMS 22.', 1;
 
   DECLARE @WorkerIds TABLE (WorkerId INT PRIMARY KEY);
   INSERT @WorkerIds (WorkerId) VALUES (@WorkerId);
-  IF @ApplicantWorkerId IS NOT NULL INSERT @WorkerIds (WorkerId) VALUES (@ApplicantWorkerId);
+  INSERT @WorkerIds (WorkerId)
+  SELECT w.WorkerId FROM dbo.Workers w
+  WHERE w.UserId IN (@CustomerId, @ApplicantId)
+    AND NOT EXISTS (SELECT 1 FROM @WorkerIds existing WHERE existing.WorkerId = w.WorkerId);
 
   DECLARE @ApplicationIds TABLE (ApplicationId INT PRIMARY KEY);
   INSERT @ApplicationIds (ApplicationId)
@@ -113,7 +115,7 @@ const RESET_TEST_FIXTURES_SQL = `
   DELETE s FROM dbo.WorkerServices s WHERE s.WorkerId IN (SELECT WorkerId FROM @WorkerIds);
   DELETE h FROM dbo.WeeklyHours h WHERE h.WorkerId IN (SELECT WorkerId FROM @WorkerIds);
   DELETE v FROM dbo.AvailabilitySlots v WHERE v.WorkerId IN (SELECT WorkerId FROM @WorkerIds);
-  IF @ApplicantWorkerId IS NOT NULL DELETE FROM dbo.Workers WHERE WorkerId = @ApplicantWorkerId;
+  DELETE w FROM dbo.Workers w WHERE w.UserId IN (@CustomerId, @ApplicantId);
 
   UPDATE dbo.Users SET FullName = N'Playwright Customer', Phone = N'070 000 0101', Role = N'Customer',
     SuburbId = (SELECT SuburbId FROM dbo.Suburbs WHERE Name = N'Bellville') WHERE UserId = @CustomerId;

@@ -40,6 +40,7 @@ test("TC-09 — submit applications, reject invalid phone input, approve/reject 
 
   await signInFixture(page, "admin");
   await page.goto("/admin");
+  await page.waitForLoadState("networkidle");
   const approved = page.getByRole("article").filter({ hasText: approvedDescription });
   const rejected = page.getByRole("article").filter({ hasText: rejectedDescription });
   await approved.getByRole("button", { name: "Approve" }).click();

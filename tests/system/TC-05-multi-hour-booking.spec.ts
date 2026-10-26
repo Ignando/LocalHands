@@ -12,7 +12,7 @@ test("TC-05 — book two hours once, charge the selected rate twice and include 
   await selectAvailableHours(page, 2);
   const visibleEstimateText = await page
     .locator("aside")
-    .getByText("Estimated total")
+    .getByText("Estimated total", { exact: true })
     .locator("xpath=..")
     .innerText();
   const visibleEstimate = parseRandAmount(visibleEstimateText);
